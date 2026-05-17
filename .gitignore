@@ -1,0 +1,18 @@
+# Virtual environment
+.venv/
+env/
+venv/
+ENV/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Live Simulation Data & Telemetry Logs
+data/
+
+# Dashboard builds and dependencies
+node_modules/
+dist/
+.DS_Store
