@@ -398,7 +398,16 @@ class AirTaxi:
         # 6. Smooth altitude deck transition
         if not self.building_alert and not getattr(self, 'is_emergency_landing', False) and not getattr(self, 'cooperative_avoidance', False):
             # Proactively select corridor target altitude from actual heading direction
-            self.target_altitude = get_corridor_altitude(actual_vx, actual_vy)
+            cruise_alt = get_corridor_altitude(actual_vx, actual_vy)
+            
+            # Glide-slope landing descent: scale target altitude down to 40m when within 120px of skyport
+            t_dx = self.target_x - self.x
+            t_dy = self.target_y - self.y
+            t_dist = math.sqrt(t_dx**2 + t_dy**2)
+            if t_dist < 120:
+                self.target_altitude = max(40, int((t_dist / 120.0) * cruise_alt))
+            else:
+                self.target_altitude = cruise_alt
 
         # Apply smooth altitude transition (Easing / LERP)
         self.altitude += (self.target_altitude - self.altitude) * 0.05
@@ -441,6 +450,14 @@ class AirTaxi:
     def detect_buildings(self):
         self.building_alert = False
         in_any_building = False
+        
+        # Scale down / disable climb overrides when approaching landing pads
+        target_dx = self.target_x - self.x
+        target_dy = self.target_y - self.y
+        dist_to_target = math.sqrt(target_dx**2 + target_dy**2)
+        if dist_to_target < 100:
+            return
+
         for building in buildings:
             bx = building["x"]
             by = building["y"]
