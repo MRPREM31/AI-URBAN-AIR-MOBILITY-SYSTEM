@@ -31,14 +31,17 @@ if os.path.exists(MODEL_PATH):
 # =========================================================
 
 skyports = [
-    {"name": "Begumpet Skyport", "x": 500, "y": 80},
-    {"name": "Madhapur IT Terminal", "x": 150, "y": 180},
-    {"name": "Jubilee Hills Skyport", "x": 800, "y": 250},
-    {"name": "Gachibowli Skyport", "x": 1000, "y": 450},
-    {"name": "Banjara Hills Skyport", "x": 800, "y": 550},
-    {"name": "Secunderabad Terminal", "x": 650, "y": 720},
-    {"name": "Shamshabad Aero-Hub (RGIA)", "x": 950, "y": 800},
-    {"name": "Charminar Skyport", "x": 250, "y": 700},
+    {"name": "Kempegowda International Aero Hub", "x": 758, "y": 797},
+    {"name": "CSIR-NAL Aerospace Hub", "x": 228, "y": 472},
+    {"name": "Hebbal Mobility Port", "x": 356, "y": 472},
+    {"name": "Yelahanka Sky Terminal", "x": 353, "y": 601},
+    {"name": "MG Road Central Skyport", "x": 385, "y": 351},
+    {"name": "Indiranagar Air Terminal", "x": 516, "y": 357},
+    {"name": "Whitefield Tech Skyport", "x": 916, "y": 340},
+    {"name": "Electronic City Aero Port", "x": 588, "y": 91},
+    {"name": "Koramangala Sky Hub", "x": 457, "y": 270},
+    {"name": "Marathahalli Flight Terminal", "x": 724, "y": 318},
+    {"name": "Jayanagar Urban Skyport", "x": 344, "y": 250}
 ]
 
 buildings = [
