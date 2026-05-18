@@ -31,17 +31,17 @@ if os.path.exists(MODEL_PATH):
 # =========================================================
 
 skyports = [
-    {"name": "Kempegowda International Aero Hub", "x": 758, "y": 797},
-    {"name": "CSIR-NAL Aerospace Hub", "x": 228, "y": 472},
-    {"name": "Hebbal Mobility Port", "x": 356, "y": 472},
-    {"name": "Yelahanka Sky Terminal", "x": 353, "y": 601},
-    {"name": "MG Road Central Skyport", "x": 385, "y": 351},
-    {"name": "Indiranagar Air Terminal", "x": 516, "y": 357},
-    {"name": "Whitefield Tech Skyport", "x": 916, "y": 340},
-    {"name": "Electronic City Aero Port", "x": 588, "y": 91},
-    {"name": "Koramangala Sky Hub", "x": 457, "y": 270},
-    {"name": "Marathahalli Flight Terminal", "x": 724, "y": 318},
-    {"name": "Jayanagar Urban Skyport", "x": 344, "y": 250}
+    {"name": "Kempegowda International Airport", "x": 950, "y": 80},
+    {"name": "CSIR-National Aerospace Laboratories", "x": 750, "y": 300},
+    {"name": "Hebbal", "x": 500, "y": 80},
+    {"name": "Yelahanka", "x": 200, "y": 70},
+    {"name": "MG Road", "x": 500, "y": 450},
+    {"name": "Indiranagar", "x": 800, "y": 400},
+    {"name": "Whitefield", "x": 1050, "y": 350},
+    {"name": "Electronic City", "x": 950, "y": 800},
+    {"name": "Koramangala", "x": 650, "y": 650},
+    {"name": "Marathahalli", "x": 900, "y": 550},
+    {"name": "Jayanagar", "x": 250, "y": 700},
 ]
 
 buildings = [

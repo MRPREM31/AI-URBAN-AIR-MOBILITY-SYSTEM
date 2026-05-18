@@ -49,22 +49,10 @@ def avoid_building(taxi, building):
     
     # If inside the building buffer area, apply steering forces
     if dist < radius:
-        # Calculate distance to destination skyport
-        target_dx = taxi.target_x - taxi.x
-        target_dy = taxi.target_y - taxi.y
-        dist_to_target = math.sqrt(target_dx**2 + target_dy**2)
-        
         # Calculate push force factor (stronger force the closer we get)
         push_factor = (radius - dist) / radius
         
-        # Scale down skyscraper repulsion as we approach target skyport to prevent coordinate locks
-        if dist_to_target < 150:
-            fade = dist_to_target / 150.0
-            push_factor *= fade
-            if dist_to_target < 100:
-                return  # Completely bypass overrides when close to landing
-        
-        # Inject lateral steering forces into autopilot
+        # Pushing unit vector
         push_x = dx / dist if dist > 0 else 1.0
         push_y = dy / dist if dist > 0 else 0.0
         
@@ -73,6 +61,7 @@ def avoid_building(taxi, building):
             taxi.steering_x = 0.0
             taxi.steering_y = 0.0
             
+        # Inject lateral steering forces into autopilot
         taxi.steering_x += push_x * push_factor * 4.5
         taxi.steering_y += push_y * push_factor * 4.5
         
