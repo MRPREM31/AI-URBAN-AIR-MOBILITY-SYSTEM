@@ -23,7 +23,7 @@ import Analytics from './components/Analytics';
 
 interface Taxi {
   id: string;
-  status: 'Flying' | 'Landing' | 'Emerging' | 'Critical' | 'Bypassing';
+  status: 'Flying' | 'Landing' | 'Emerging' | 'Critical' | 'Bypassing' | 'Detouring';
   latitude: number;
   longitude: number;
   altitude: number;
@@ -39,6 +39,7 @@ interface Airspace {
   buildings: Array<{ x: number; y: number; w: number; h: number }>;
   no_fly_zones: Array<{ name: string; x: number; y: number; radius: number }>;
   weather_cells: Array<{ name: string; x: number; y: number; radius: number }>;
+  congested_zones: Array<{ x: number; y: number; radius: number; density: number }>;
 }
 
 const getAltitudeColor = (alt: number) => {
@@ -148,6 +149,7 @@ export default function UrbanAirTaxiDashboard() {
       case 'Emerging': return 'text-yellow-500 border-yellow-500/30 bg-yellow-500/5';
       case 'Critical': return 'text-red-500 border-red-500/50 bg-red-500/10 animate-pulse';
       case 'Bypassing': return 'text-[#ffaa00] border-[#ffaa00]/30 bg-[#ffaa00]/5';
+      case 'Detouring': return 'text-orange-500 border-orange-500/40 bg-orange-500/10 animate-pulse';
       default: return 'text-zinc-500 border-zinc-500/30';
     }
   };
@@ -254,6 +256,25 @@ export default function UrbanAirTaxiDashboard() {
                     </g>
                   ))}
 
+                  {/* Congested Zones (High-Traffic Bottlenecks) */}
+                  {airspace?.congested_zones?.map((cz, idx) => (
+                    <g key={`cz-${idx}`}>
+                      {/* Deep warning zone */}
+                      <circle cx={cz.x} cy={cz.y} r={cz.radius} fill="rgba(239, 68, 68, 0.08)" stroke="#ef4444" strokeWidth="2" opacity="0.9" />
+                      
+                      {/* Secondary pulsing safety border */}
+                      <circle cx={cz.x} cy={cz.y} r={cz.radius + 15} fill="none" stroke="#ef4444" strokeWidth="0.75" strokeDasharray="5,5" className="animate-pulse" opacity="0.4" />
+                      
+                      <circle cx={cz.x} cy={cz.y} r="5" fill="#ef4444" className="animate-ping" />
+                      
+                      {/* Banner Indicator Text */}
+                      <text x={cz.x} y={cz.y - 12} fill="#ef4444" fontSize="8" fontWeight="black" textAnchor="middle" opacity="0.9" letterSpacing="1.5px">CONGESTED ZONE</text>
+                      
+                      {/* Traffic Density Indicator */}
+                      <text x={cz.x} y={cz.y + 6} fill="#fff" fontSize="8" fontWeight="bold" textAnchor="middle" opacity="0.95">DENSITY: {cz.density}</text>
+                    </g>
+                  ))}
+
                   {/* Skyports */}
                   {airspace?.skyports.map((p, idx) => (
                     <g key={`p-${idx}`}>
@@ -270,23 +291,71 @@ export default function UrbanAirTaxiDashboard() {
                     const color = getAltitudeColor(taxi.altitude);
                     const isCritical = taxi.status === 'Critical';
                     const isBypassing = taxi.status === 'Bypassing';
+                    const isDetouring = taxi.status === 'Detouring';
                     
+                    // Compute dynamic detour waypoint in the frontend for live visual pathways
+                    let wpx = 0, wpy = 0, tx = 0, ty = 0;
+                    let hasDetourLine = false;
+                    if (isDetouring) {
+                      const cz = airspace?.congested_zones?.find(z => {
+                        const dist = Math.sqrt(Math.pow(x - z.x, 2) + Math.pow(y - z.y, 2));
+                        return dist < 130;
+                      });
+                      if (cz) {
+                        const dx = x - cz.x;
+                        const dy = y - cz.y;
+                        const dist = Math.sqrt(dx*dx + dy*dy);
+                        if (dist > 0) {
+                          const ux = -dy / dist;
+                          const uy = dx / dist;
+                          
+                          const wp1_x = cz.x + ux * (cz.radius + 35);
+                          const wp1_y = cz.y + uy * (cz.radius + 35);
+                          
+                          const wp2_x = cz.x - ux * (cz.radius + 35);
+                          const wp2_y = cz.y - uy * (cz.radius + 35);
+                          
+                          const destName = taxi.route.split(" -> ")[1];
+                          const destPort = airspace?.skyports.find(p => p.name === destName);
+                          tx = destPort ? destPort.x : x;
+                          ty = destPort ? destPort.y : y;
+                          
+                          const d1 = Math.sqrt(Math.pow(wp1_x - tx, 2) + Math.pow(wp1_y - ty, 2));
+                          const d2 = Math.sqrt(Math.pow(wp2_x - tx, 2) + Math.pow(wp2_y - ty, 2));
+                          
+                          wpx = d1 < d2 ? wp1_x : wp2_x;
+                          wpy = d1 < d2 ? wp1_y : wp2_y;
+                          hasDetourLine = true;
+                        }
+                      }
+                    }
+
                     return (
                       <g key={taxi.id}>
+                        {/* Live dynamic detour paths */}
+                        {hasDetourLine && (
+                          <g>
+                            <line x1={x} y1={y} x2={wpx} y2={wpy} stroke="#f97316" strokeWidth="2" strokeDasharray="4,4" className="animate-pulse" />
+                            <line x1={wpx} y1={wpy} x2={tx} y2={ty} stroke="rgba(249, 115, 22, 0.4)" strokeWidth="1" strokeDasharray="2,2" />
+                            <circle cx={wpx} cy={wpy} r="4" fill="#f97316" stroke="#fff" strokeWidth="0.5" />
+                            <text x={wpx + 8} y={wpy + 3} fill="#f97316" fontSize="7" fontWeight="black">WP_DETOUR</text>
+                          </g>
+                        )}
+
                         {/* Safe Bubble radius matching simulation 45px */}
-                        <circle cx={x} cy={y} r="45" fill="none" stroke={isCritical ? '#ef4444' : isBypassing ? '#ffaa00' : color} strokeWidth="1" strokeDasharray="3,3" opacity={isCritical || isBypassing ? "0.6" : "0.3"} />
+                        <circle cx={x} cy={y} r="45" fill="none" stroke={isCritical ? '#ef4444' : isDetouring ? '#f97316' : isBypassing ? '#ffaa00' : color} strokeWidth="1" strokeDasharray="3,3" opacity={isCritical || isDetouring || isBypassing ? "0.6" : "0.3"} />
                         
                         {/* Interactive glow ring */}
-                        <circle cx={x} cy={y} r="15" fill="none" stroke={isBypassing ? '#ffaa00' : color} strokeWidth="0.5" opacity="0.2" />
-
+                        <circle cx={x} cy={y} r="15" fill="none" stroke={isDetouring ? '#f97316' : isBypassing ? '#ffaa00' : color} strokeWidth="0.5" opacity="0.2" />
+ 
                         {/* Central Target Dot */}
-                        <circle cx={x} cy={y} r="5" fill={isCritical ? '#ef4444' : isBypassing ? '#ffaa00' : color} className={isCritical ? 'animate-ping' : isBypassing ? 'animate-pulse' : ''} />
+                        <circle cx={x} cy={y} r="5" fill={isCritical ? '#ef4444' : isDetouring ? '#f97316' : isBypassing ? '#ffaa00' : color} className={isCritical ? 'animate-ping' : isDetouring || isBypassing ? 'animate-pulse' : ''} />
                         
                         {/* Telemetry Labels */}
                         <rect x={x + 10} y={y - 30} width="95" height="36" fill="rgba(2, 2, 3, 0.85)" stroke="rgba(255,255,255,0.08)" strokeWidth="0.5" />
                         <text x={x + 15} y={y - 20} fill="#fff" fontSize="9" fontWeight="bold">{taxi.id} // {Math.round(taxi.battery)}%</text>
                         <text x={x + 15} y={y - 10} fill={color} fontSize="8" fontWeight="bold">ALT: {Math.round(taxi.altitude)}M</text>
-                        <text x={x + 15} y={y - 2} fill={isCritical ? '#ff4444' : isBypassing ? '#ffaa00' : '#888'} fontSize="7" fontWeight="bold" letterSpacing="0.5px">SYS_{taxi.status.toUpperCase()}</text>
+                        <text x={x + 15} y={y - 2} fill={isCritical ? '#ff4444' : isDetouring ? '#f97316' : isBypassing ? '#ffaa00' : '#888'} fontSize="7" fontWeight="bold" letterSpacing="0.5px">SYS_{taxi.status.toUpperCase()}</text>
                       </g>
                     );
                   })}

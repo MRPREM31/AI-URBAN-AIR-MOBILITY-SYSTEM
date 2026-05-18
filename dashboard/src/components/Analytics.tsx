@@ -14,7 +14,7 @@ export default function Analytics({ history }: AnalyticsProps) {
           ALT_TELEMETRY_LOG
         </h3>
         <div style={{ width: '100%', height: '180px', minWidth: '0px' }}>
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
             <AreaChart data={history}>
               <CartesianGrid strokeDasharray="2 2" stroke="#111" vertical={false} />
               <XAxis dataKey="time" hide />
@@ -34,7 +34,7 @@ export default function Analytics({ history }: AnalyticsProps) {
           RISK_VEC_ANALYSIS
         </h3>
         <div style={{ width: '100%', height: '180px', minWidth: '0px' }}>
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
             <LineChart data={history}>
               <CartesianGrid strokeDasharray="2 2" stroke="#111" vertical={false} />
               <XAxis dataKey="time" hide />

@@ -19,6 +19,7 @@ interface Airspace {
   buildings: Array<{ x: number; y: number; w: number; h: number }>;
   no_fly_zones: Array<{ name: string; x: number; y: number; radius: number }>;
   weather_cells: Array<{ name: string; x: number; y: number; radius: number }>;
+  congested_zones?: Array<{ x: number; y: number; radius: number; density: number }>;
 }
 
 interface Airspace3DProps {
@@ -129,7 +130,9 @@ function TaxiDrone({ taxi }: { taxi: Taxi }) {
   });
 
   let color = getAltitudeColor(taxi.altitude);
-  if (taxi.status === 'Bypassing') {
+  if (taxi.status === 'Detouring') {
+    color = '#f97316'; // Premium bright warm orange/gold for congestion avoidances
+  } else if (taxi.status === 'Bypassing') {
     color = '#ffaa00'; // Futuristic warm orange for autopilot cooperative conflict resolution
   } else if (taxi.status === 'Critical') {
     color = '#ff4444'; // Bright warning red for emergency profiles
@@ -315,6 +318,35 @@ function Environment({ airspace }: { airspace: Airspace | null }) {
               {`HAZARD: STORM ALPHA`}
             </Text>
             <pointLight color="#0ea5e9" intensity={40} distance={150} />
+          </group>
+        );
+      })}
+
+      {/* 5. Dynamic Congested Zone 3D cylinders */}
+      {airspace?.congested_zones?.map((cz, i) => {
+        const [tx, tz] = mapPygameCoords(cz.x, cz.y);
+        const r3d = cz.radius * 0.909;
+        return (
+          <group key={`cz3d-${i}`} position={[tx, 35, tz]}>
+            {/* Glowing warning red wall cylinder */}
+            <mesh>
+              <cylinderGeometry args={[r3d, r3d, 70, 32, 1, true]} />
+              <meshBasicMaterial color="#ff2222" side={THREE.DoubleSide} transparent opacity={0.12} />
+            </mesh>
+            {/* Outer dotted/wireframe grid cylinder */}
+            <mesh>
+              <cylinderGeometry args={[r3d, r3d, 70, 32, 5, true]} />
+              <meshBasicMaterial color="#ff2222" wireframe transparent opacity={0.3} />
+            </mesh>
+            {/* Flashing danger core */}
+            <mesh position={[0, -35, 0]}>
+              <cylinderGeometry args={[5, 5, 0.5, 16]} />
+              <meshBasicMaterial color="#ff2222" transparent opacity={0.8} />
+            </mesh>
+            <Text position={[0, 38, 0]} fontSize={5.5} color="#ff3333" fontWeight="bold">
+              {`CONGESTED // DENSITY: ${cz.density}`}
+            </Text>
+            <pointLight color="#ff3333" intensity={60} distance={120} />
           </group>
         );
       })}

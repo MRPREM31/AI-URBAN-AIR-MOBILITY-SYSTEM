@@ -320,9 +320,12 @@ class AirTaxi:
         self.steering_x = 0.0
         self.steering_y = 0.0
 
-        # 2. Desired velocity toward skyport
-        dx = self.target_x - self.x
-        dy = self.target_y - self.y
+        # 2. Desired velocity toward active flight target (destination or micro-route detour)
+        active_target_x = self.detour_x if getattr(self, 'detouring', False) else self.target_x
+        active_target_y = self.detour_y if getattr(self, 'detouring', False) else self.target_y
+
+        dx = active_target_x - self.x
+        dy = active_target_y - self.y
         distance = math.sqrt(dx ** 2 + dy ** 2)
 
         if distance != 0:
@@ -467,9 +470,16 @@ class AirTaxi:
     def draw(self):
         latitude, longitude = self.get_gps()
         color = get_altitude_color(self.altitude)
+        is_detouring = getattr(self, 'detouring', False)
 
         # 1. Real-time path corridors with direction indicators
-        draw_path_with_arrows(screen, (self.x, self.y), (self.target_x, self.target_y), color, width=2)
+        if is_detouring:
+            # Draw primary active vector to detour waypoint
+            draw_path_with_arrows(screen, (self.x, self.y), (self.detour_x, self.detour_y), ORANGE, width=2)
+            # Draw planned path from detour waypoint to final target in thin gold
+            draw_path_with_arrows(screen, (self.detour_x, self.detour_y), (self.target_x, self.target_y), (255, 170, 0), width=1)
+        else:
+            draw_path_with_arrows(screen, (self.x, self.y), (self.target_x, self.target_y), color, width=2)
 
         # 2. Pulsing safe distance collision circle
         pulse = int(4 * math.sin(frame * 0.12))
@@ -477,8 +487,8 @@ class AirTaxi:
         bubble_surf = pygame.Surface((bubble_radius*2, bubble_radius*2), pygame.SRCALPHA)
         
         # Transparent visual layers
-        bubble_color = (255, 0, 0, 30) if self.status == 'Critical' else (color[0], color[1], color[2], 20)
-        border_color = (255, 0, 0, 100) if self.status == 'Critical' else (color[0], color[1], color[2], 80)
+        bubble_color = (255, 0, 0, 30) if self.status == 'Critical' else (255, 165, 0, 25) if is_detouring else (color[0], color[1], color[2], 20)
+        border_color = (255, 0, 0, 100) if self.status == 'Critical' else (255, 165, 0, 95) if is_detouring else (color[0], color[1], color[2], 80)
         
         pygame.draw.circle(bubble_surf, bubble_color, (bubble_radius, bubble_radius), bubble_radius)
         pygame.draw.circle(bubble_surf, border_color, (bubble_radius, bubble_radius), bubble_radius, 1)
@@ -486,11 +496,13 @@ class AirTaxi:
 
         # 3. Aircraft indicator node
         pygame.draw.circle(screen, BLACK, (int(self.x), int(self.y)), 10)
-        pygame.draw.circle(screen, color, (int(self.x), int(self.y)), 7)
+        pygame.draw.circle(screen, ORANGE if is_detouring else color, (int(self.x), int(self.y)), 7)
 
-        # Small nose-cone notch pointing forward
-        dx = self.target_x - self.x
-        dy = self.target_y - self.y
+        # Small nose-cone notch pointing forward towards active target
+        active_t_x = self.detour_x if is_detouring else self.target_x
+        active_t_y = self.detour_y if is_detouring else self.target_y
+        dx = active_t_x - self.x
+        dy = active_t_y - self.y
         dist = math.sqrt(dx**2 + dy**2)
         if dist > 0:
             nx = dx / dist
@@ -501,7 +513,10 @@ class AirTaxi:
         label_y = self.y - 50
         id_text = font.render(f"{self.id} | BATT: {int(self.battery)}%", True, WHITE)
         alt_text = font.render(f"ALT: {int(self.altitude)}m", True, color)
-        status_text = font.render(f"SYS: {self.status}", True, RED if self.status == 'Critical' else YELLOW if self.status == 'Emerging' else GREEN)
+        
+        # Color codes: RED for Critical, ORANGE for Detouring, YELLOW for Emerging, GREEN for Flying
+        status_color = RED if self.status == 'Critical' else ORANGE if is_detouring else YELLOW if self.status == 'Emerging' else GREEN
+        status_text = font.render(f"SYS: {self.status}", True, status_color)
         route_text = font.render(f"{self.pickup} -> {self.drop}", True, (200, 200, 200))
 
         screen.blit(id_text, (self.x + 15, label_y))
@@ -560,6 +575,7 @@ for i in range(8):
 # =========================================================
 
 logged_collisions = set()
+congested_zones = []
 
 speed_factor = 1.0
 last_slow_down = False
@@ -697,6 +713,26 @@ while running:
         screen.blit(storm_lbl, (storm["x"] - 105, storm["y"] - 10))
 
     # =====================================================
+    # DRAW CONGESTED ZONES (Dynamic Bottlenecks)
+    # =====================================================
+    for cz in congested_zones:
+        cz_surf = pygame.Surface((cz["radius"]*2, cz["radius"]*2), pygame.SRCALPHA)
+        # Deep semi-transparent red warning circle
+        pygame.draw.circle(cz_surf, (255, 30, 30, 45), (cz["radius"], cz["radius"]), cz["radius"])
+        pygame.draw.circle(cz_surf, (255, 30, 30, 180), (cz["radius"], cz["radius"]), cz["radius"], 2)
+        
+        # Dynamic warning pulse ring
+        pulse_r = int((frame * 2.0) % cz["radius"])
+        pulse_alpha = int(140 * (1.0 - pulse_r / cz["radius"]))
+        pygame.draw.circle(cz_surf, (255, 30, 30, pulse_alpha), (cz["radius"], cz["radius"]), pulse_r, 1)
+        
+        screen.blit(cz_surf, (int(cz["x"] - cz["radius"]), int(cz["y"] - cz["radius"])))
+        
+        # Display traffic density index label
+        cz_lbl = font.render(f"CONGESTED ZONE (DENSITY: {cz['density']})", True, (255, 100, 100))
+        screen.blit(cz_lbl, (int(cz["x"] - 110), int(cz["y"] - 10)))
+
+    # =====================================================
     # DRAW SKYPORTS
     # =====================================================
 
@@ -801,6 +837,9 @@ while running:
     # MOVE & INTEGRATE TAXIS
     # =====================================================
 
+    # 0. Scan dynamic airspace congestion zones
+    congested_zones = detect_congestion_zones(taxis)
+
     for taxi in taxis:
         taxi.detect_buildings()
 
@@ -810,6 +849,9 @@ while running:
 
         # 2. Dynamic Corridor Separation Controls
         congestion_control(taxi, taxis)
+
+        # 2b. Dynamic Airspace Congestion Avoidance Rerouting
+        apply_congestion_avoidance(taxi, congested_zones)
 
         # 3. Emergency Divert Checks (Battery & Diversions)
         emergency_decision(taxi, skyports)

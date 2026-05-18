@@ -162,11 +162,21 @@ def get_airspace():
         except:
             pass
             
+    congested_zones = []
+    congested_path = "data/congested_zones.json"
+    if os.path.exists(congested_path):
+        try:
+            with open(congested_path, "r") as f:
+                congested_zones = json.load(f)
+        except:
+            pass
+            
     return {
         "skyports": skyports,
         "buildings": buildings,
         "no_fly_zones": no_fly_zones,
-        "weather_cells": weather_cells
+        "weather_cells": weather_cells,
+        "congested_zones": congested_zones
     }
 
 class Settings(BaseModel):
