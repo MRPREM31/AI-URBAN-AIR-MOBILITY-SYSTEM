@@ -2,20 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { 
   Shield, 
   Wind, 
-  Navigation, 
   AlertTriangle, 
-  Activity, 
   Cpu, 
   Zap, 
   Crosshair,
   TrendingUp,
-  Clock,
-  MapPin,
   Wifi,
   Layers,
   Terminal,
   Activity as Heartbeat,
-  Battery
+  Search
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Airspace3D from './components/Airspace3D';
@@ -59,6 +55,18 @@ export default function UrbanAirTaxiDashboard() {
   const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString());
   const [events, setEvents] = useState<any[]>([]);
   const [slowDown, setSlowDown] = useState(false);
+
+  // Advanced Interactive States
+  const [selectedTaxiId, setSelectedTaxiId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [sectorFilter, setSectorFilter] = useState<string>('ALL');
+  const [autofocusMode, setAutofocusMode] = useState<boolean>(true);
+  const [trailBuffer, setTrailBuffer] = useState<Record<string, Array<[number, number]>>>({});
+
+  // Replay & Playback Engine States
+  const [playbackActive, setPlaybackActive] = useState<boolean>(false);
+  const [playbackIndex, setPlaybackIndex] = useState<number>(0);
+  const [playbackBuffer, setPlaybackBuffer] = useState<Array<Taxi[]>>([]);
 
   const logContainerRef = React.useRef<HTMLDivElement>(null);
 
@@ -105,15 +113,38 @@ export default function UrbanAirTaxiDashboard() {
       const response = await fetch("http://127.0.0.1:8000/taxis");
       const data = await response.json();
       if (!data.error) {
-        setTaxis(data);
-        
-        const avgAltitude = data.length > 0 ? data.reduce((acc: number, t: Taxi) => acc + t.altitude, 0) / data.length : 0;
-        const avgRisk = data.length > 0 ? data.reduce((acc: number, t: Taxi) => acc + t.risk, 0) / data.length : 0;
-        
-        setHistory(prev => {
-          const newEntry = { time: new Date().toLocaleTimeString(), avgAltitude, avgRisk };
-          return [...prev, newEntry].slice(-25);
+        // Build playback history buffer in background
+        setPlaybackBuffer(prev => {
+          const next = [...prev, data];
+          return next.slice(-120); // Hold last 2 minutes (120 frames)
         });
+
+        if (!playbackActive) {
+          setTaxis(data);
+          
+          const avgAltitude = data.length > 0 ? data.reduce((acc: number, t: Taxi) => acc + t.altitude, 0) / data.length : 0;
+          const avgRisk = data.length > 0 ? data.reduce((acc: number, t: Taxi) => acc + t.risk, 0) / data.length : 0;
+          
+          setHistory(prev => {
+            const newEntry = { time: new Date().toLocaleTimeString(), avgAltitude, avgRisk };
+            return [...prev, newEntry].slice(-25);
+          });
+
+          // Log historical trail coordinates
+          setTrailBuffer(prev => {
+            const next = { ...prev };
+            data.forEach((taxi: Taxi) => {
+              const tx = (taxi.longitude - 78.0) * 1100;
+              const ty = (taxi.latitude - 17.0) * 900;
+              const trail = next[taxi.id] || [];
+              const last = trail[trail.length - 1];
+              if (!last || Math.abs(last[0] - tx) > 1 || Math.abs(last[1] - ty) > 1) {
+                next[taxi.id] = [...trail, [tx, ty] as [number, number]].slice(-15);
+              }
+            });
+            return next;
+          });
+        }
       }
 
       // Fetch dynamic weather & airspace metadata
@@ -140,7 +171,14 @@ export default function UrbanAirTaxiDashboard() {
       fetchData();
     }, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [playbackActive]); // Restart sync trigger if playback toggles
+
+  // Synchronize dynamic scrubbing index
+  useEffect(() => {
+    if (playbackActive && playbackBuffer[playbackIndex]) {
+      setTaxis(playbackBuffer[playbackIndex]);
+    }
+  }, [playbackActive, playbackIndex, playbackBuffer]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -207,11 +245,112 @@ export default function UrbanAirTaxiDashboard() {
       <div className="max-w-[1600px] mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* CENTER - SPATIAL DATA */}
         <div className="lg:col-span-9 space-y-4">
+          
+          {/* PLAYBACK CONTROL HUB */}
+          <div className="bg-black/90 border border-zinc-900 p-3 flex flex-col gap-2 rounded-sm shadow-md">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <span className={`w-2.5 h-2.5 rounded-full ${playbackActive ? 'bg-orange-500 animate-pulse' : 'bg-green-500 animate-ping'}`} />
+                <span className="text-[10px] font-black uppercase tracking-wider text-zinc-400">
+                  {playbackActive ? `PLAYBACK ACTIVE // TIMELINE STEP: ${playbackIndex + 1} / ${playbackBuffer.length}` : 'LIVE REAL-TIME STREAMING'}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3">
+                {/* Live / Pause Toggle */}
+                <button 
+                  onClick={() => {
+                    if (playbackActive) {
+                      setPlaybackActive(false);
+                    } else {
+                      if (playbackBuffer.length > 0) {
+                        setPlaybackActive(true);
+                        setPlaybackIndex(playbackBuffer.length - 1);
+                      }
+                    }
+                  }}
+                  className={`px-3 py-1 text-[9px] font-black tracking-widest border transition-all ${
+                    playbackActive 
+                      ? 'bg-orange-500 text-black border-orange-500 hover:bg-orange-600' 
+                      : 'bg-black text-[#00ffcc] border-[#00ffcc]/30 hover:border-[#00ffcc]/60'
+                  }`}
+                >
+                  {playbackActive ? 'GO LIVE STREAM' : 'PAUSE / REPLAY FLIGHT'}
+                </button>
+
+                {/* Step back */}
+                <button
+                  disabled={!playbackActive || playbackIndex === 0}
+                  onClick={() => setPlaybackIndex(prev => Math.max(0, prev - 1))}
+                  className="px-2 py-1 text-[9px] font-black bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  ◀ STEP BACK
+                </button>
+
+                {/* Step forward */}
+                <button
+                  disabled={!playbackActive || playbackIndex >= playbackBuffer.length - 1}
+                  onClick={() => setPlaybackIndex(prev => Math.min(playbackBuffer.length - 1, prev + 1))}
+                  className="px-2 py-1 text-[9px] font-black bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  STEP FWD ▶
+                </button>
+
+                {/* Autofocus Toggle */}
+                <button
+                  onClick={() => setAutofocusMode(prev => !prev)}
+                  className={`px-3 py-1 text-[9px] font-black border transition-all ${
+                    autofocusMode 
+                      ? 'bg-[#00ffcc]/10 text-[#00ffcc] border-[#00ffcc]/40' 
+                      : 'bg-black text-zinc-500 border-zinc-800 hover:border-zinc-700'
+                  }`}
+                >
+                  {autofocusMode ? 'AUTOFOCUS: ON' : 'AUTOFOCUS: OFF'}
+                </button>
+              </div>
+            </div>
+
+            {/* Timeline Slider */}
+            {playbackActive && playbackBuffer.length > 0 && (
+              <div className="flex items-center gap-3 border-t border-zinc-900 pt-2 w-full">
+                <span className="text-[8px] text-zinc-600 font-mono">00:00</span>
+                <input 
+                  type="range"
+                  min="0"
+                  max={playbackBuffer.length - 1}
+                  value={playbackIndex}
+                  onChange={(e) => setPlaybackIndex(parseInt(e.target.value))}
+                  className="flex-1 accent-[#00ffcc] h-1 bg-zinc-800 cursor-pointer rounded-none"
+                />
+                <span className="text-[8px] text-zinc-400 font-mono">T-{playbackBuffer.length - 1 - playbackIndex} SECS</span>
+              </div>
+            )}
+          </div>
+
           <div className="relative aspect-[21/9] border border-zinc-800 bg-[#030305] overflow-hidden">
-            {viewMode === '3D' ? <Airspace3D taxis={taxis} airspace={airspace} /> : (
+            {viewMode === '3D' ? <Airspace3D taxis={taxis} airspace={airspace} selectedTaxiId={selectedTaxiId} /> : (
               <div className="relative w-full h-full">
-                {/* SVG High-Tech Radar Overlay */}
-                <svg viewBox="0 0 1100 900" className="w-full h-full select-none">
+                {/* SVG High-Tech Radar Overlay with smooth viewBox slide transitions */}
+                <svg 
+                  viewBox={(() => {
+                    if (autofocusMode && selectedTaxiId) {
+                      const act = taxis.find(t => t.id === selectedTaxiId);
+                      if (act) {
+                        const tx = (act.longitude - 78.0) * 1100;
+                        const ty = (act.latitude - 17.0) * 900;
+                        const zoomW = 380;
+                        const zoomH = 290;
+                        // Clamp center viewport safely inside maps grid bounds
+                        const vx = Math.max(0, Math.min(1100 - zoomW, tx - zoomW / 2));
+                        const vy = Math.max(0, Math.min(900 - zoomH, ty - zoomH / 2));
+                        return `${vx} ${vy} ${zoomW} ${zoomH}`;
+                      }
+                    }
+                    return "0 0 1100 900";
+                  })()} 
+                  className="w-full h-full select-none transition-all duration-700 ease-in-out"
+                  style={{ transitionProperty: 'viewBox' }}
+                >
                   {/* Radar Circles */}
                   <circle cx="550" cy="450" r="400" fill="none" stroke="#141420" strokeWidth="1" />
                   <circle cx="550" cy="450" r="250" fill="none" stroke="#141420" strokeWidth="1" strokeDasharray="5,5" />
@@ -275,14 +414,34 @@ export default function UrbanAirTaxiDashboard() {
                     </g>
                   ))}
 
-                  {/* Skyports */}
+                  {/* Skyports with Hyderabad place labels */}
                   {airspace?.skyports.map((p, idx) => (
                     <g key={`p-${idx}`}>
                       <circle cx={p.x} cy={p.y} r="6" fill="#00ffcc" />
-                      <circle cx={p.x} cy={p.y} r="12" fill="none" stroke="#00ffcc" strokeWidth="1" opacity="0.4" />
-                      <text x={p.x + 15} y={p.y + 4} fill="#fff" fontSize="10" fontWeight="bold" opacity="0.9">{p.name}</text>
+                      <circle cx={p.x} cy={p.y} r="12" fill="none" stroke="#00ffcc" strokeWidth="1" opacity="0.4" className="animate-pulse" />
+                      <text x={p.x + 10} y={p.y + 16} fill="#fff" fontSize="9" fontWeight="bold" opacity="0.9" filter="drop-shadow(0px 2px 2px #000)" textAnchor="middle">{p.name}</text>
                     </g>
                   ))}
+
+                  {/* Historical Breadcrumb Trails */}
+                  {taxis.map(taxi => {
+                    const trail = trailBuffer[taxi.id] || [];
+                    if (trail.length < 2) return null;
+                    const isSelected = selectedTaxiId === taxi.id;
+                    const color = getAltitudeColor(taxi.altitude);
+                    const pointsStr = trail.map(pt => `${pt[0]},${pt[1]}`).join(" ");
+                    return (
+                      <polyline
+                        key={`trail-${taxi.id}`}
+                        points={pointsStr}
+                        fill="none"
+                        stroke={color}
+                        strokeWidth={isSelected ? "2.5" : "1.2"}
+                        strokeDasharray="4,2"
+                        opacity={isSelected ? "0.85" : "0.35"}
+                      />
+                    );
+                  })}
 
                   {/* Taxi Nodes */}
                   {taxis.map((taxi) => {
@@ -292,8 +451,16 @@ export default function UrbanAirTaxiDashboard() {
                     const isCritical = taxi.status === 'Critical';
                     const isBypassing = taxi.status === 'Bypassing';
                     const isDetouring = taxi.status === 'Detouring';
-                    
-                    // Compute dynamic detour waypoint in the frontend for live visual pathways
+                    const isSelected = selectedTaxiId === taxi.id;
+
+                    // Sector/Search Filters mapping checks
+                    if (sectorFilter === 'NORTH' && y >= 450) return null;
+                    if (sectorFilter === 'SOUTH' && y < 450) return null;
+                    if (sectorFilter === 'EAST' && x < 550) return null;
+                    if (sectorFilter === 'WEST' && x >= 550) return null;
+                    if (searchQuery && !taxi.id.toLowerCase().includes(searchQuery.toLowerCase())) return null;
+
+                    // Compute dynamic detour waypoint inside frontend
                     let wpx = 0, wpy = 0, tx = 0, ty = 0;
                     let hasDetourLine = false;
                     if (isDetouring) {
@@ -308,31 +475,38 @@ export default function UrbanAirTaxiDashboard() {
                         if (dist > 0) {
                           const ux = -dy / dist;
                           const uy = dx / dist;
-                          
                           const wp1_x = cz.x + ux * (cz.radius + 35);
                           const wp1_y = cz.y + uy * (cz.radius + 35);
-                          
                           const wp2_x = cz.x - ux * (cz.radius + 35);
                           const wp2_y = cz.y - uy * (cz.radius + 35);
-                          
                           const destName = taxi.route.split(" -> ")[1];
                           const destPort = airspace?.skyports.find(p => p.name === destName);
                           tx = destPort ? destPort.x : x;
                           ty = destPort ? destPort.y : y;
-                          
                           const d1 = Math.sqrt(Math.pow(wp1_x - tx, 2) + Math.pow(wp1_y - ty, 2));
                           const d2 = Math.sqrt(Math.pow(wp2_x - tx, 2) + Math.pow(wp2_y - ty, 2));
-                          
                           wpx = d1 < d2 ? wp1_x : wp2_x;
                           wpy = d1 < d2 ? wp1_y : wp2_y;
                           hasDetourLine = true;
                         }
                       }
+                    } else {
+                      // Fallback straight vector
+                      const destName = taxi.route.split(" -> ")[1];
+                      const destPort = airspace?.skyports.find(p => p.name === destName);
+                      tx = destPort ? destPort.x : x;
+                      ty = destPort ? destPort.y : y;
                     }
+
+                    // Compute current heading vector angle to rotate quadcopter SVGs
+                    const headingDx = tx - x;
+                    const headingDy = ty - y;
+                    const headingDeg = Math.round((Math.atan2(headingDy, headingDx) * 180 / Math.PI) + 90);
+                    const activeColor = isCritical ? '#ef4444' : isDetouring ? '#f97316' : isBypassing ? '#ffaa00' : color;
 
                     return (
                       <g key={taxi.id}>
-                        {/* Live dynamic detour paths */}
+                        {/* Live dynamic detour waypoints */}
                         {hasDetourLine && (
                           <g>
                             <line x1={x} y1={y} x2={wpx} y2={wpy} stroke="#f97316" strokeWidth="2" strokeDasharray="4,4" className="animate-pulse" />
@@ -342,20 +516,59 @@ export default function UrbanAirTaxiDashboard() {
                           </g>
                         )}
 
-                        {/* Safe Bubble radius matching simulation 45px */}
-                        <circle cx={x} cy={y} r="45" fill="none" stroke={isCritical ? '#ef4444' : isDetouring ? '#f97316' : isBypassing ? '#ffaa00' : color} strokeWidth="1" strokeDasharray="3,3" opacity={isCritical || isDetouring || isBypassing ? "0.6" : "0.3"} />
+                        {/* Standard route lines mapping */}
+                        <line x1={x} y1={y} x2={tx} y2={ty} stroke={activeColor} strokeWidth="0.8" strokeDasharray="3,3" opacity={isSelected ? "0.8" : "0.2"} />
+
+                        {/* Safe Separation bubble */}
+                        <circle cx={x} cy={y} r="45" fill="none" stroke={activeColor} strokeWidth="1" strokeDasharray="3,3" opacity={isCritical || isDetouring || isBypassing ? "0.6" : "0.3"} />
                         
-                        {/* Interactive glow ring */}
-                        <circle cx={x} cy={y} r="15" fill="none" stroke={isDetouring ? '#f97316' : isBypassing ? '#ffaa00' : color} strokeWidth="0.5" opacity="0.2" />
- 
-                        {/* Central Target Dot */}
-                        <circle cx={x} cy={y} r="5" fill={isCritical ? '#ef4444' : isDetouring ? '#f97316' : isBypassing ? '#ffaa00' : color} className={isCritical ? 'animate-ping' : isDetouring || isBypassing ? 'animate-pulse' : ''} />
+                        {/* Pulse glow surrounding ring */}
+                        <circle cx={x} cy={y} r="15" fill="none" stroke={activeColor} strokeWidth="0.5" opacity="0.2" />
+
+                        {/* Dynamic Double Target Surveillance Reticle brackets (Flashing for selected target) */}
+                        {isSelected && (
+                          <g className="animate-pulse">
+                            <circle cx={x} cy={y} r="20" fill="none" stroke="#00ffcc" strokeWidth="1" strokeDasharray="4,2" />
+                            <circle cx={x} cy={y} r="25" fill="none" stroke="#00ffcc" strokeWidth="0.5" opacity="0.4" />
+                            <path d={`M ${x-28} ${y} L ${x-20} ${y}`} stroke="#00ffcc" strokeWidth="1.5" />
+                            <path d={`M ${x+20} ${y} L ${x+28} ${y}`} stroke="#00ffcc" strokeWidth="1.5" />
+                            <path d={`M ${x} ${y-28} L ${x} ${y-20}`} stroke="#00ffcc" strokeWidth="1.5" />
+                            <path d={`M ${x} ${y+20} L ${x} ${y+28}`} stroke="#00ffcc" strokeWidth="1.5" />
+                          </g>
+                        )}
+
+                        {/* Futuristic Rotating SVG Quadcopter UAM Icon */}
+                        <g 
+                          transform={`translate(${x}, ${y}) rotate(${headingDeg})`} 
+                          style={{ cursor: 'pointer' }} 
+                          onClick={() => setSelectedTaxiId(taxi.id)}
+                        >
+                          {/* Rotor cross arm guards */}
+                          <line x1="-10" y1="-10" x2="10" y2="10" stroke={activeColor} strokeWidth="1.5" />
+                          <line x1="-10" y1="10" x2="10" y2="-10" stroke={activeColor} strokeWidth="1.5" />
+                          
+                          {/* Guards */}
+                          <circle cx="-10" cy="-10" r="3.5" fill="none" stroke={activeColor} strokeWidth="0.5" opacity="0.5" />
+                          <circle cx="10" cy="-10" r="3.5" fill="none" stroke={activeColor} strokeWidth="0.5" opacity="0.5" />
+                          <circle cx="-10" cy="10" r="3.5" fill="none" stroke={activeColor} strokeWidth="0.5" opacity="0.5" />
+                          <circle cx="10" cy="10" r="3.5" fill="none" stroke={activeColor} strokeWidth="0.5" opacity="0.5" />
+                          
+                          {/* Spin rotors */}
+                          <circle cx="-10" cy="-10" r="1.5" fill="#fff" />
+                          <circle cx="10" cy="-10" r="1.5" fill="#fff" />
+                          <circle cx="-10" cy="10" r="1.5" fill="#fff" />
+                          <circle cx="10" cy="10" r="1.5" fill="#fff" />
+
+                          {/* Aerodynamic Carbon hull */}
+                          <polygon points="-4,6 4,6 6,-4 0,-9 -6,-4" fill="#030305" stroke={activeColor} strokeWidth="1.2" />
+                          <circle cx="0" cy="-1" r="2.5" fill={isSelected ? '#00ffcc' : activeColor} className="animate-pulse" />
+                        </g>
                         
-                        {/* Telemetry Labels */}
-                        <rect x={x + 10} y={y - 30} width="95" height="36" fill="rgba(2, 2, 3, 0.85)" stroke="rgba(255,255,255,0.08)" strokeWidth="0.5" />
-                        <text x={x + 15} y={y - 20} fill="#fff" fontSize="9" fontWeight="bold">{taxi.id} // {Math.round(taxi.battery)}%</text>
-                        <text x={x + 15} y={y - 10} fill={color} fontSize="8" fontWeight="bold">ALT: {Math.round(taxi.altitude)}M</text>
-                        <text x={x + 15} y={y - 2} fill={isCritical ? '#ff4444' : isDetouring ? '#f97316' : isBypassing ? '#ffaa00' : '#888'} fontSize="7" fontWeight="bold" letterSpacing="0.5px">SYS_{taxi.status.toUpperCase()}</text>
+                        {/* Telemetry Labels Overlay */}
+                        <rect x={x + 12} y={y - 32} width="95" height="36" fill="rgba(2, 2, 3, 0.88)" stroke={isSelected ? '#00ffcc' : "rgba(255,255,255,0.08)"} strokeWidth="0.5" />
+                        <text x={x + 16} y={y - 22} fill="#fff" fontSize="9" fontWeight="bold">{taxi.id} // {Math.round(taxi.battery)}%</text>
+                        <text x={x + 16} y={y - 12} fill={color} fontSize="8" fontWeight="bold">ALT: {Math.round(taxi.altitude)}M</text>
+                        <text x={x + 16} y={y - 4} fill={isCritical ? '#ff4444' : isDetouring ? '#f97316' : isBypassing ? '#ffaa00' : '#888'} fontSize="7" fontWeight="bold" letterSpacing="0.5px">SYS_{taxi.status.toUpperCase()}</text>
                       </g>
                     );
                   })}
@@ -434,62 +647,298 @@ export default function UrbanAirTaxiDashboard() {
           </div>
         </div>
 
-        {/* SIDEBAR - ATC TRACKING LIST */}
+        {/* SIDEBAR - SURVEILLANCE & FLEET DECKS */}
         <div className="lg:col-span-3 space-y-4">
-          <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
-            <h2 className="text-xs font-black uppercase tracking-widest text-[#00ffcc] flex items-center gap-2">
-              <Crosshair className="w-4 h-4" /> Live_Tracking
-            </h2>
-            <span className="text-[9px] font-black bg-[#00ffcc]/10 text-[#00ffcc] px-2 py-0.5 border border-[#00ffcc]/20">
-              {taxis.length} UNITS_UP
-            </span>
-          </div>
+          
+          {/* UAM INFORMATION PANEL (VISIBLE ON SELECTION) */}
+          <AnimatePresence mode="wait">
+            {selectedTaxiId && (() => {
+              const activeTaxi = taxis.find(t => t.id === selectedTaxiId);
+              if (!activeTaxi) return null;
+              
+              const isSelectedCritical = activeTaxi.status === 'Critical';
+              const isSelectedBypassing = activeTaxi.status === 'Bypassing';
+              const isSelectedDetouring = activeTaxi.status === 'Detouring';
+              const activeColor = isSelectedCritical ? '#ef4444' : isSelectedDetouring ? '#f97316' : isSelectedBypassing ? '#ffaa00' : '#00ffcc';
+              
+              // Calculate Cardinal Direction of movement based on route name or coordinates
+              const routeParts = activeTaxi.route.split(" -> ");
+              const pickupName = routeParts[0];
+              const dropName = routeParts[1];
+              
+              // Estimate ETA
+              const destPort = airspace?.skyports.find(p => p.name === dropName);
+              let etaString = "ARRIVED";
+              if (destPort) {
+                const cx = (activeTaxi.longitude - 78.0) * 1100;
+                const cy = (activeTaxi.latitude - 17.0) * 900;
+                const dist = Math.sqrt(Math.pow(destPort.x - cx, 2) + Math.pow(destPort.y - cy, 2));
+                const etaSeconds = (dist / Math.max(0.5, activeTaxi.speed * 12));
+                if (etaSeconds > 1) {
+                  const mins = Math.floor(etaSeconds / 60);
+                  const secs = Math.floor(etaSeconds % 60);
+                  etaString = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+                }
+              }
+              
+              // Detect abnormal behavior
+              const isAbnormal = activeTaxi.battery < 30 || activeTaxi.risk > 70 || activeTaxi.speed < 0.2;
+              let abnormalMessage = "";
+              if (activeTaxi.battery < 30) abnormalMessage = "LOW FUEL CRITICAL DIVERSION ENGAGED";
+              else if (activeTaxi.risk > 70) abnormalMessage = "HIGH COLLISION PROXIMITY VECTOR ENCOUNTERED";
+              else if (activeTaxi.speed < 0.2) abnormalMessage = "ABNORMAL FLIGHT HOVER DRIFT DETECTED";
 
-          <div className="space-y-2 h-[750px] overflow-y-auto pr-2 custom-scrollbar">
-            {taxis.map((taxi) => (
-              <div key={taxi.id} className="bg-black border border-zinc-900 p-3 hover:border-[#00ffcc]/40 transition-all">
-                <div className="flex justify-between items-start mb-2">
-                  <div>
-                    <div className="text-xs font-black text-white">{taxi.id}</div>
-                    <div className="text-[8px] text-zinc-600 mt-0.5 uppercase tracking-widest">{taxi.route}</div>
+              return (
+                <motion.div
+                  initial={{ opacity: 0, y: 15 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -15 }}
+                  className="bg-black border border-[#00ffcc]/30 p-4 relative shadow-[0_0_15px_rgba(0,255,204,0.05)]"
+                >
+                  {/* Glowing header target reticle */}
+                  <div className="absolute top-2 right-2 flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#00ffcc] animate-ping" />
+                    <button 
+                      onClick={() => setSelectedTaxiId(null)}
+                      className="text-[8px] font-black uppercase text-[#00ffcc] hover:text-red-400 border border-[#00ffcc]/20 hover:border-red-400/30 px-1 py-0.5"
+                    >
+                      DISCONNECT
+                    </button>
                   </div>
-                  <div className={`px-2 py-0.5 text-[8px] font-black border uppercase tracking-widest ${getStatusColor(taxi.status)}`}>
-                    {taxi.status}
-                  </div>
-                </div>
 
-                <div className="grid grid-cols-3 gap-2 mb-3">
-                  <div className="bg-[#050505] p-2 border border-zinc-900">
-                    <div className="text-[8px] text-zinc-600 uppercase mb-0.5">ALT</div>
-                    <div className="text-xs font-bold font-mono text-white tracking-wider">{Math.round(taxi.altitude)}M</div>
-                  </div>
-                  <div className="bg-[#050505] p-2 border border-zinc-900">
-                    <div className="text-[8px] text-zinc-600 uppercase mb-0.5">SPD</div>
-                    <div className="text-xs font-bold font-mono text-white tracking-wider">{Math.round(taxi.speed * 100)}KMH</div>
-                  </div>
-                  <div className="bg-[#050505] p-2 border border-zinc-900">
-                    <div className="text-[8px] text-zinc-600 uppercase mb-0.5">BATT</div>
-                    <div className={`text-xs font-bold font-mono tracking-wider ${taxi.battery < 30 ? 'text-red-500 animate-pulse' : 'text-white'}`}>
-                      {Math.round(taxi.battery)}%
+                  <h3 className="text-[10px] font-black uppercase tracking-[0.2em] mb-4 text-[#00ffcc] flex items-center gap-2">
+                    <Crosshair className="w-3.5 h-3.5 animate-spin text-[#00ffcc]" style={{ animationDuration: '4s' }} />
+                    SURVEILLANCE_LINK
+                  </h3>
+
+                  {/* Abnormal Alert Indicator */}
+                  {isAbnormal && (
+                    <div className="bg-red-950/40 border border-red-500/50 p-2.5 mb-3 text-red-400 text-[8px] font-bold tracking-wider animate-pulse flex items-start gap-2">
+                      <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                      <div>
+                        <div className="font-black uppercase text-red-500">ABNORMAL FLIGHT STATUS</div>
+                        <div className="text-zinc-400 mt-0.5 text-[7px] leading-tight">{abnormalMessage}</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Visual telemetry dials */}
+                  <div className="border border-zinc-900 p-3 mb-4 space-y-3 bg-[#020203]">
+                    <div className="flex justify-between items-center pb-2 border-b border-zinc-900">
+                      <span className="text-[12px] font-black text-white">{activeTaxi.id}</span>
+                      <span className="text-[8px] font-mono text-zinc-500">FLIGHT_DECK_{activeTaxi.altitude}M</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 text-[9px]">
+                      <div>
+                        <span className="text-zinc-600 block uppercase">Altitude</span>
+                        <span className="text-xs font-bold text-white tracking-wider">{Math.round(activeTaxi.altitude)}M</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-600 block uppercase">Speed</span>
+                        <span className="text-xs font-bold text-white tracking-wider">{Math.round(activeTaxi.speed * 100)} KMH</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-600 block uppercase">Latitude</span>
+                        <span className="text-zinc-400 font-mono">{activeTaxi.latitude.toFixed(5)}</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-600 block uppercase">Longitude</span>
+                        <span className="text-zinc-400 font-mono">{activeTaxi.longitude.toFixed(5)}</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-600 block uppercase">Depart From</span>
+                        <span className="text-zinc-300 font-semibold block truncate">{pickupName}</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-600 block uppercase">Destination</span>
+                        <span className="text-zinc-300 font-semibold block truncate">{dropName}</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-600 block uppercase">Corridor Deck</span>
+                        <span className="text-zinc-300 font-semibold block text-[8px] truncate">{activeTaxi.altitude >= 600 ? "HIGHWAY_DECK_WEST" : "FLIGHT_LANE_EAST"}</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-600 block uppercase">ETA (Skyport)</span>
+                        <span className="text-[#00ffcc] font-bold block">{etaString}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="space-y-1.5">
-                  <div className="flex justify-between items-center text-[8px] font-black uppercase">
-                    <span className="text-zinc-600">Risk_Vec</span>
-                    <span className={taxi.status === 'Bypassing' ? 'text-[#ffaa00] font-bold' : taxi.risk > 70 ? 'text-red-500 font-bold' : 'text-[#00ffcc]'}>{Math.round(taxi.risk)}%</span>
+                  <div className="space-y-2 text-[9px] mb-2">
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500 uppercase">AI Collision Index</span>
+                      <span className={`font-bold ${activeTaxi.risk > 70 ? 'text-red-500 animate-pulse' : 'text-[#00ffcc]'}`}>{activeTaxi.risk}%</span>
+                    </div>
+                    <div className="h-1 bg-zinc-900 overflow-hidden">
+                      <div className="h-full transition-all duration-500" style={{ width: `${activeTaxi.risk}%`, backgroundColor: activeColor }} />
+                    </div>
                   </div>
-                  <div className="h-1 bg-zinc-900 rounded-none overflow-hidden">
-                    <motion.div
-                      initial={{ width: 0 }}
-                      animate={{ width: `${taxi.risk}%` }}
-                      className={`h-full ${taxi.status === 'Bypassing' ? 'bg-[#ffaa00]' : taxi.risk > 70 ? 'bg-red-500' : 'bg-[#00ffcc]'}`}
-                    />
+
+                  <div className="space-y-2 text-[9px]">
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500 uppercase">Battery Telemetry</span>
+                      <span className={`font-bold ${activeTaxi.battery < 30 ? 'text-red-500 animate-pulse' : 'text-green-400'}`}>{Math.round(activeTaxi.battery)}%</span>
+                    </div>
+                    <div className="h-1 bg-zinc-900 overflow-hidden">
+                      <div className={`h-full transition-all duration-500 ${activeTaxi.battery < 30 ? 'bg-red-500' : 'bg-green-500'}`} style={{ width: `${activeTaxi.battery}%` }} />
+                    </div>
                   </div>
-                </div>
+
+                  <div className="mt-4 pt-3 border-t border-zinc-900 grid grid-cols-2 gap-2 text-[8px] font-black uppercase text-zinc-500">
+                    <div>
+                      STATUS: <span style={{ color: activeColor }}>{activeTaxi.status}</span>
+                    </div>
+                    <div>
+                      COLLISION: <span className={isSelectedCritical ? 'text-red-500 animate-pulse' : 'text-green-500'}>{isSelectedCritical ? 'CONFLICT' : 'SECURE'}</span>
+                    </div>
+                  </div>
+                </motion.div>
+              );
+            })()}
+          </AnimatePresence>
+
+          {/* FLEET TRACKING & FILTERS SECTION */}
+          <div className="border border-zinc-850 p-4 bg-black/40 space-y-4">
+            
+            {/* Search Input Widget */}
+            <div className="space-y-2">
+              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block flex items-center gap-1">
+                <Search className="w-3 h-3 text-[#00ffcc]" /> Search Fleet By ID
+              </label>
+              <div className="relative">
+                <input 
+                  type="text"
+                  placeholder="ENTER TAXI ID (E.G. TX2)..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value.toUpperCase())}
+                  className="w-full bg-[#050508] border border-zinc-800 p-2 text-xs font-mono text-white placeholder-zinc-700 rounded-none focus:outline-none focus:border-[#00ffcc]/50"
+                />
+                {searchQuery && (
+                  <button 
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2 top-2 text-[9px] text-zinc-500 hover:text-white"
+                  >
+                    CLEAR
+                  </button>
+                )}
               </div>
-            ))}
+            </div>
+
+            {/* Dropdown Selector (Direct selection target) */}
+            <div className="space-y-2">
+              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block">Direct Target Select</label>
+              <select 
+                value={selectedTaxiId || ''} 
+                onChange={(e) => setSelectedTaxiId(e.target.value || null)}
+                className="w-full bg-[#050508] border border-zinc-800 p-2 text-xs font-mono text-white rounded-none focus:outline-none focus:border-[#00ffcc]/50"
+              >
+                <option value="">-- SELECT TAXI TARGET --</option>
+                {taxis.map(t => (
+                  <option key={t.id} value={t.id}>{t.id} [{t.status}]</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Sector Filtering Widgets */}
+            <div className="space-y-2">
+              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block">Sector-Wise Quadrants</label>
+              <div className="grid grid-cols-5 gap-1 bg-black border border-zinc-900 p-0.5">
+                {['ALL', 'NORTH', 'SOUTH', 'EAST', 'WEST'].map(sect => (
+                  <button
+                    key={sect}
+                    onClick={() => setSectorFilter(sect)}
+                    className={`py-1 text-[8px] font-black tracking-tighter text-center transition-all ${
+                      sectorFilter === sect 
+                        ? 'bg-[#00ffcc] text-black font-extrabold' 
+                        : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50'
+                    }`}
+                  >
+                    {sect}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Busiest Skyports & Analytical density indices */}
+            <div className="border-t border-zinc-900 pt-3 space-y-1.5 text-[8.5px]">
+              <div className="text-[9px] font-black uppercase text-zinc-400 mb-1 flex items-center gap-1.5">
+                <Cpu className="w-3.5 h-3.5 text-[#00ffcc]" /> DENSITY_ANALYTICAL_MATRIX
+              </div>
+              <div className="flex justify-between text-zinc-500">
+                <span>ACTIVE_CONGESTED_ZONES</span>
+                <span className="text-red-500 font-bold font-mono">{airspace?.congested_zones?.length || 0} SECTORS</span>
+              </div>
+              <div className="flex justify-between text-zinc-500">
+                <span>AVERAGE_FLEET_ALTITUDE</span>
+                <span className="text-white font-mono">{taxis.length > 0 ? Math.round(taxis.reduce((acc, t) => acc + t.altitude, 0) / taxis.length) : 0}M</span>
+              </div>
+              <div className="flex justify-between text-zinc-500">
+                <span>SEPARATION_VIOLATIONS</span>
+                <span className="text-green-400 font-mono">0 ACTIVE</span>
+              </div>
+            </div>
+
+            {/* Dynamic Fleet List Scrollable */}
+            <div className="border-t border-zinc-900 pt-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-black uppercase text-[#00ffcc] tracking-widest">Surveillance Feed ({taxis.filter(t => {
+                  const x = (t.longitude - 78.0) * 1100;
+                  const y = (t.latitude - 17.0) * 900;
+                  if (sectorFilter === 'NORTH') return y < 450;
+                  if (sectorFilter === 'SOUTH') return y >= 450;
+                  if (sectorFilter === 'EAST') return x >= 550;
+                  if (sectorFilter === 'WEST') return x < 550;
+                  return true;
+                }).length} units)</span>
+              </div>
+
+              <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1 custom-scrollbar">
+                {taxis
+                  .filter(t => {
+                    const x = (t.longitude - 78.0) * 1100;
+                    const y = (t.latitude - 17.0) * 900;
+                    
+                    // Apply quadrant filter
+                    if (sectorFilter === 'NORTH' && y >= 450) return false;
+                    if (sectorFilter === 'SOUTH' && y < 450) return false;
+                    if (sectorFilter === 'EAST' && x < 550) return false;
+                    if (sectorFilter === 'WEST' && x >= 550) return false;
+                    
+                    // Apply search query
+                    if (searchQuery && !t.id.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+                    
+                    return true;
+                  })
+                  .map((taxi) => {
+                    const isSelected = selectedTaxiId === taxi.id;
+                    return (
+                      <div 
+                        key={taxi.id} 
+                        onClick={() => setSelectedTaxiId(taxi.id)}
+                        className={`bg-black/90 p-2.5 border transition-all cursor-pointer ${
+                          isSelected 
+                            ? 'border-[#00ffcc] bg-[#00ffcc]/5 shadow-[0_0_8px_rgba(0,255,204,0.1)]' 
+                            : 'border-zinc-900 hover:border-zinc-700'
+                        }`}
+                      >
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-[10px] font-black text-white">{taxi.id}</span>
+                          <span className={`px-1.5 py-0.5 text-[7px] font-black border uppercase tracking-widest leading-none ${getStatusColor(taxi.status)}`}>
+                            {taxi.status}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-[8px] text-zinc-500">
+                          <span>ALT: {Math.round(taxi.altitude)}M</span>
+                          <span>SPD: {Math.round(taxi.speed * 100)}KMH</span>
+                          <span className={taxi.battery < 30 ? 'text-red-500 animate-pulse' : 'text-zinc-400'}>{Math.round(taxi.battery)}% BATT</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+
           </div>
         </div>
       </div>

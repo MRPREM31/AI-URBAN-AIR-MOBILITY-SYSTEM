@@ -31,14 +31,14 @@ if os.path.exists(MODEL_PATH):
 # =========================================================
 
 skyports = [
-    {"name": "Hebbal", "x": 500, "y": 80},
-    {"name": "Malleshwaram", "x": 150, "y": 180},
-    {"name": "Indiranagar", "x": 800, "y": 250},
-    {"name": "Whitefield", "x": 1000, "y": 450},
-    {"name": "Koramangala", "x": 800, "y": 550},
-    {"name": "HSR Layout", "x": 650, "y": 720},
-    {"name": "Electronic City", "x": 950, "y": 800},
-    {"name": "Jayanagar", "x": 250, "y": 700},
+    {"name": "Begumpet Skyport", "x": 500, "y": 80},
+    {"name": "Madhapur IT Terminal", "x": 150, "y": 180},
+    {"name": "Jubilee Hills Skyport", "x": 800, "y": 250},
+    {"name": "Gachibowli Skyport", "x": 1000, "y": 450},
+    {"name": "Banjara Hills Skyport", "x": 800, "y": 550},
+    {"name": "Secunderabad Terminal", "x": 650, "y": 720},
+    {"name": "Shamshabad Aero-Hub (RGIA)", "x": 950, "y": 800},
+    {"name": "Charminar Skyport", "x": 250, "y": 700},
 ]
 
 buildings = [

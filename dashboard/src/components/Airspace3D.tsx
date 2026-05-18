@@ -1,4 +1,4 @@
-import React, { useRef, useMemo } from 'react';
+import { useRef, useMemo } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Stars, Float, Text, Trail, Grid, Sky } from '@react-three/drei';
 import * as THREE from 'three';
@@ -25,6 +25,7 @@ interface Airspace {
 interface Airspace3DProps {
   taxis: Taxi[];
   airspace: Airspace | null;
+  selectedTaxiId?: string | null;
 }
 
 const getAltitudeColor = (alt: number) => {
@@ -354,7 +355,10 @@ function Environment({ airspace }: { airspace: Airspace | null }) {
   );
 }
 
-export default function Airspace3D({ taxis, airspace }: Airspace3DProps) {
+export default function Airspace3D({ taxis, airspace, selectedTaxiId }: Airspace3DProps) {
+  const selectedTaxi = selectedTaxiId ? taxis.find(t => t.id === selectedTaxiId) : null;
+  const selectedPos = selectedTaxi ? getPos(selectedTaxi) : null;
+
   return (
     <div className="w-full h-full bg-[#010101] relative">
       <Canvas shadows camera={{ position: [300, 350, 400], fov: 42 }}>
@@ -372,6 +376,30 @@ export default function Airspace3D({ taxis, airspace }: Airspace3DProps) {
         {taxis.map((taxi) => (
           <TaxiDrone key={taxi.id} taxi={taxi} />
         ))}
+
+        {/* Glowing vertical surveillance cyber cylinder for selected taxi */}
+        {selectedPos && (
+          <group position={[selectedPos[0], selectedPos[1], selectedPos[2]]}>
+            <mesh>
+              <cylinderGeometry args={[18, 18, 80, 16, 1, true]} />
+              <meshBasicMaterial color="#00ffcc" side={THREE.DoubleSide} transparent opacity={0.18} />
+            </mesh>
+            <mesh>
+              <cylinderGeometry args={[18, 18, 80, 16, 4, true]} />
+              <meshBasicMaterial color="#00ffcc" wireframe transparent opacity={0.3} />
+            </mesh>
+            {/* Flashing top and bottom rings */}
+            <mesh position={[0, -40, 0]} rotation={[Math.PI / 2, 0, 0]}>
+              <ringGeometry args={[16, 20, 16]} />
+              <meshBasicMaterial color="#00ffcc" side={THREE.DoubleSide} transparent opacity={0.6} />
+            </mesh>
+            <mesh position={[0, 40, 0]} rotation={[Math.PI / 2, 0, 0]}>
+              <ringGeometry args={[16, 20, 16]} />
+              <meshBasicMaterial color="#00ffcc" side={THREE.DoubleSide} transparent opacity={0.6} />
+            </mesh>
+            <pointLight color="#00ffcc" intensity={30} distance={50} />
+          </group>
+        )}
 
         {/* 5. Symmetrical directional Flight Corridor 3D Decks */}
         {/* Deck 50 - 500m (Cyan Grid) */}
