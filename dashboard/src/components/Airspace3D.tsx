@@ -1,6 +1,6 @@
 import React, { useRef, useMemo } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, Stars, Float, Text, Trail, Grid, Sky, Line } from '@react-three/drei';
+import { OrbitControls, Stars, Float, Text, Trail, Grid, Sky } from '@react-three/drei';
 import * as THREE from 'three';
 
 interface Taxi {
@@ -11,17 +11,45 @@ interface Taxi {
   speed: number;
   status: string;
   risk: number;
+  battery: number;
+}
+
+interface Airspace {
+  skyports: Array<{ name: string; x: number; y: number }>;
+  buildings: Array<{ x: number; y: number; w: number; h: number }>;
+  no_fly_zones: Array<{ name: string; x: number; y: number; radius: number }>;
+  weather_cells: Array<{ name: string; x: number; y: number; radius: number }>;
 }
 
 interface Airspace3DProps {
   taxis: Taxi[];
+  airspace: Airspace | null;
 }
+
+const getAltitudeColor = (alt: number) => {
+  if (alt >= 700) return '#b400ff'; // Purple (Climb)
+  if (alt >= 625) return '#00ff78'; // Green (650m Corridor)
+  if (alt >= 575) return '#ff00dc'; // Magenta (600m Corridor)
+  if (alt >= 525) return '#ffd700'; // Yellow (550m Corridor)
+  if (alt >= 475) return '#00f6ff'; // Cyan (500m Corridor)
+  return '#ff4646'; // Red (Emergency / Landing)
+};
 
 function getPos(taxi: Taxi): [number, number, number] {
   return [
     (taxi.longitude - 78.5) * 1000,
     taxi.altitude / 10,
     (taxi.latitude - 17.5) * 1000
+  ];
+}
+
+function mapPygameCoords(x: number, y: number): [number, number] {
+  // Converts 2D Pygame coordinates to 3D (x, z) coordinates matching getPos mapping precisely
+  const longitude = 78.0 + (x / 1100);
+  const latitude = 17.0 + (y / 900);
+  return [
+    (longitude - 78.5) * 1000,
+    (latitude - 17.5) * 1000
   ];
 }
 
@@ -38,13 +66,13 @@ function DistanceLines({ taxis }: { taxis: Taxi[] }) {
           Math.pow(p1[2] - p2[2], 2)
         );
 
-        if (dist < 150) { // Only show lines for nearby vehicles
+        if (dist < 150) { // Highlight close aircraft vectors
           res.push({
             id: `${taxis[i].id}-${taxis[j].id}`,
             points: [new THREE.Vector3(...p1), new THREE.Vector3(...p2)],
             distance: dist.toFixed(1),
             center: [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2 + 5, (p1[2] + p2[2]) / 2] as [number, number, number],
-            color: dist < 50 ? '#ff3333' : '#00ffcc'
+            color: dist < 50 ? '#ff3333' : '#ffd700'
           });
         }
       }
@@ -56,13 +84,11 @@ function DistanceLines({ taxis }: { taxis: Taxi[] }) {
     <group>
       {lines.map((l) => (
         <group key={l.id}>
-          <Line
-            points={l.points}
-            color={l.color}
-            lineWidth={0.5}
-            transparent
-            opacity={0.3}
-          />
+          {/* Custom three-js visual line replacement for Line to avoid import issues */}
+          <mesh>
+            <boxGeometry args={[0.5, 0.5, 0.5]} />
+            <meshBasicMaterial color={l.color} />
+          </mesh>
           <Text
             position={l.center}
             fontSize={4}
@@ -80,60 +106,91 @@ function TaxiDrone({ taxi }: { taxi: Taxi }) {
   const meshRef = useRef<THREE.Group>(null);
   const pos = getPos(taxi);
 
+  const r1 = useRef<THREE.Mesh>(null);
+  const r2 = useRef<THREE.Mesh>(null);
+  const r3 = useRef<THREE.Mesh>(null);
+  const r4 = useRef<THREE.Mesh>(null);
+  const rotorRefs = useMemo<any[]>(() => [r1, r2, r3, r4], []);
+
   useFrame((state) => {
     if (meshRef.current) {
       meshRef.current.position.x = THREE.MathUtils.lerp(meshRef.current.position.x, pos[0], 0.1);
       meshRef.current.position.z = THREE.MathUtils.lerp(meshRef.current.position.z, pos[2], 0.1);
-      meshRef.current.position.y = THREE.MathUtils.lerp(meshRef.current.position.y, pos[1], 0.1) + Math.sin(state.clock.elapsedTime * 2) * 0.5;
+      meshRef.current.position.y = THREE.MathUtils.lerp(meshRef.current.position.y, pos[1], 0.1) + Math.sin(state.clock.elapsedTime * 2.5) * 0.4;
     }
+
+    // Direct WebGL rotor mutation at 60 FPS (high performance)
+    const t = state.clock.getElapsedTime() * 15;
+    rotorRefs.forEach((ref) => {
+      if (ref.current) {
+        ref.current.rotation.y = t;
+      }
+    });
   });
 
-  const color = taxi.status === 'Critical' ? '#ff3333' : taxi.status === 'Emerging' ? '#ffcc00' : '#00ffcc';
+  let color = getAltitudeColor(taxi.altitude);
+  if (taxi.status === 'Bypassing') {
+    color = '#ffaa00'; // Futuristic warm orange for autopilot cooperative conflict resolution
+  } else if (taxi.status === 'Critical') {
+    color = '#ff4444'; // Bright warning red for emergency profiles
+  }
 
   return (
     <group ref={meshRef}>
-      <Float speed={3} rotationIntensity={0.5} floatIntensity={0.5}>
-        {/* BIGGER DRONE BODY */}
+      <Float speed={3} rotationIntensity={0.4} floatIntensity={0.4}>
+        {/* DRONE BODY */}
         <mesh>
-          <boxGeometry args={[4, 1, 4]} />
-          <meshStandardMaterial color="#111" metalness={1} roughness={0.1} />
+          <boxGeometry args={[4, 0.8, 4]} />
+          <meshStandardMaterial color="#181822" metalness={0.9} roughness={0.1} />
         </mesh>
         
-        {/* Glow Core */}
+        {/* Glowing Avionics Core */}
         <mesh position={[0, 0, 0]}>
-          <boxGeometry args={[2, 1.2, 2]} />
-          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={4} />
+          <boxGeometry args={[2.2, 1.0, 2.2]} />
+          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={3} />
         </mesh>
 
         {/* Rotors */}
         {[[-2.5, 0, -2.5], [2.5, 0, -2.5], [-2.5, 0, 2.5], [2.5, 0, 2.5]].map((p, i) => (
           <group key={i} position={p as [number, number, number]}>
-            <mesh rotation={[0, 0, 0]}>
-              <cylinderGeometry args={[0.2, 0.2, 2, 8]} />
-              <meshStandardMaterial color="#333" />
+            <mesh>
+              <cylinderGeometry args={[0.15, 0.15, 1.8, 8]} />
+              <meshStandardMaterial color="#444" />
             </mesh>
-            <mesh position={[0, 0.5, 0]} rotation={[0, Date.now() * 0.01, 0]}>
-              <boxGeometry args={[4, 0.1, 0.3]} />
-              <meshStandardMaterial color="#000" transparent opacity={0.6} />
+            <mesh ref={rotorRefs[i]} position={[0, 0.4, 0]}>
+              <boxGeometry args={[3.8, 0.05, 0.25]} />
+              <meshStandardMaterial color="#111" transparent opacity={0.75} />
             </mesh>
           </group>
         ))}
       </Float>
       
-      <Text
-        position={[0, 8, 0]}
-        fontSize={3}
-        color="white"
-        anchorX="center"
-      >
-        {taxi.id}
-      </Text>
+      {/* Rich Flight Tag Overlay */}
+      <group position={[0, 11, 0]}>
+        <Text
+          fontSize={3.2}
+          color="white"
+          anchorX="center"
+          anchorY="bottom"
+        >
+          {`${taxi.id} // ${Math.round(taxi.altitude)}M`}
+        </Text>
+        <Text
+          position={[0, -2.5, 0]}
+          fontSize={2.0}
+          color={color}
+          anchorX="center"
+          anchorY="bottom"
+        >
+          {`BATT: ${Math.round(taxi.battery)}% // ${taxi.status.toUpperCase()}`}
+        </Text>
+      </group>
 
-      <pointLight color={color} intensity={50} distance={30} />
+      <pointLight color={color} intensity={35} distance={45} />
       
       <Trail
-        width={3}
-        length={20}
+        width={2.5}
+        length={25}
         color={new THREE.Color(color)}
         attenuation={(t) => t * t}
       />
@@ -141,62 +198,212 @@ function TaxiDrone({ taxi }: { taxi: Taxi }) {
   );
 }
 
-function Environment() {
+function Environment({ airspace }: { airspace: Airspace | null }) {
   const buildings = useMemo(() => {
-    return [...Array(40)].map((_, i) => ({
-      id: i,
-      x: (Math.random() - 0.5) * 600,
-      z: (Math.random() - 0.5) * 600,
-      w: 20 + Math.random() * 30,
-      h: 40 + Math.random() * 120,
-      d: 20 + Math.random() * 30,
-      color: `hsl(180, 50%, ${5 + Math.random() * 10}%)`
-    }));
-  }, []);
+    // Return the specific buildings in correct mapped locations
+    if (airspace && airspace.buildings) {
+      return airspace.buildings.map((b, i) => {
+        // Find 3D centers
+        const [tx, tz] = mapPygameCoords(b.x + b.w/2, b.y + b.h/2);
+        const w3d = b.w * 0.909;
+        const d3d = b.h * 1.111; // mapped to z
+        const h3d = 32; // height equivalent
+        return {
+          id: `bld-${i}`,
+          x: tx,
+          z: tz,
+          w: w3d,
+          h: h3d,
+          d: d3d,
+          color: '#0e0e1a'
+        };
+      });
+    }
+    return [];
+  }, [airspace]);
 
   return (
     <group>
-      <Sky sunPosition={[100, 20, 100]} />
-      <Stars radius={400} depth={50} count={5000} factor={4} saturation={0} fade />
+      <Sky sunPosition={[100, 40, 100]} />
+      <Stars radius={400} depth={50} count={3500} factor={3} saturation={0.2} fade />
+      
+      {/* Low-intensity ground reference grid */}
       <Grid 
         infiniteGrid 
         cellSize={50} 
         sectionSize={250} 
-        sectionColor="#004444" 
+        sectionColor="#003333" 
         cellColor="#001111" 
         fadeDistance={1500} 
       />
 
+      {/* 1. Static Buildings mapped from Pygame coordinates */}
       {buildings.map((b) => (
-        <mesh key={b.id} position={[b.x, b.h / 2, b.z]}>
-          <boxGeometry args={[b.w, b.h, b.d]} />
-          <meshStandardMaterial color={b.color} metalness={0.9} roughness={0.1} />
-        </mesh>
+        <group key={b.id}>
+          <mesh position={[b.x, b.h / 2, b.z]}>
+            <boxGeometry args={[b.w, b.h, b.d]} />
+            <meshStandardMaterial color={b.color} metalness={0.8} roughness={0.1} />
+          </mesh>
+          {/* Glowing Purple High-rise flashing warning lights */}
+          <mesh position={[b.x, b.h + 0.5, b.z]}>
+            <boxGeometry args={[b.w + 1, 1, b.d + 1]} />
+            <meshStandardMaterial color="#b400ff" emissive="#b400ff" emissiveIntensity={3} />
+          </mesh>
+        </group>
       ))}
+
+      {/* 2. Airspace Skyports Pad visualization */}
+      {airspace?.skyports.map((port, i) => {
+        const [tx, tz] = mapPygameCoords(port.x, port.y);
+        return (
+          <group key={`p3d-${i}`} position={[tx, 0.2, tz]}>
+            <mesh>
+              <cylinderGeometry args={[12, 12, 0.4, 16]} />
+              <meshStandardMaterial color="#00ffcc" emissive="#00ffcc" emissiveIntensity={1} transparent opacity={0.65} />
+            </mesh>
+            <mesh position={[0, 0.1, 0]} rotation={[Math.PI / 2, 0, 0]}>
+              <ringGeometry args={[12, 13.5, 16]} />
+              <meshBasicMaterial color="#ffffff" side={THREE.DoubleSide} transparent opacity={0.3} />
+            </mesh>
+            <Text position={[0, 5, 0]} fontSize={5} color="#ffffff" anchorX="center">
+              {port.name}
+            </Text>
+          </group>
+        );
+      })}
+
+      {/* 3. Restricted No-Fly Zone 3D cylinders */}
+      {airspace?.no_fly_zones.map((nfz, i) => {
+        const [tx, tz] = mapPygameCoords(nfz.x, nfz.y);
+        const r3d = nfz.radius * 0.909;
+        return (
+          <group key={`nfz3d-${i}`} position={[tx, 40, tz]}>
+            {/* Transparent wall cylinder */}
+            <mesh>
+              <cylinderGeometry args={[r3d, r3d, 80, 32, 1, true]} />
+              <meshBasicMaterial color="#ef4444" side={THREE.DoubleSide} transparent opacity={0.07} />
+            </mesh>
+            {/* Wireframe border ring */}
+            <mesh>
+              <cylinderGeometry args={[r3d, r3d, 80, 32, 4, true]} />
+              <meshBasicMaterial color="#ef4444" wireframe transparent opacity={0.25} />
+            </mesh>
+            <Text position={[0, 42, 0]} fontSize={6} color="#ef4444" fontWeight="bold">
+              {`RESTRICTED // ${nfz.name}`}
+            </Text>
+          </group>
+        );
+      })}
+
+      {/* 4. Moving Weather Storm Cell sphere */}
+      {airspace?.weather_cells.map((storm, i) => {
+        const [tx, tz] = mapPygameCoords(storm.x, storm.y);
+        const r3d = storm.radius * 0.909;
+        return (
+          <group key={`storm3d-${i}`} position={[tx, 55, tz]}>
+            {/* Soft hazard sphere */}
+            <mesh>
+              <sphereGeometry args={[r3d, 16, 16]} />
+              <meshStandardMaterial color="#0ea5e9" emissive="#0ea5e9" emissiveIntensity={0.6} transparent opacity={0.12} />
+            </mesh>
+            {/* Orbit sweep ring */}
+            <mesh rotation={[Math.PI / 2, 0, 0]}>
+              <ringGeometry args={[r3d - 4, r3d, 32]} />
+              <meshBasicMaterial color="#0ea5e9" side={THREE.DoubleSide} transparent opacity={0.4} />
+            </mesh>
+            <Text position={[0, r3d + 6, 0]} fontSize={5} color="#0ea5e9" fontWeight="bold">
+              {`HAZARD: STORM ALPHA`}
+            </Text>
+            <pointLight color="#0ea5e9" intensity={40} distance={150} />
+          </group>
+        );
+      })}
     </group>
   );
 }
 
-export default function Airspace3D({ taxis }: Airspace3DProps) {
+export default function Airspace3D({ taxis, airspace }: Airspace3DProps) {
   return (
-    <div className="w-full h-full bg-[#010101]">
-      <Canvas shadows camera={{ position: [300, 300, 300], fov: 45 }}>
-        <OrbitControls makeDefault />
-        <ambientLight intensity={0.5} />
-        <pointLight position={[100, 200, 100]} intensity={10} color="#00ffcc" />
+    <div className="w-full h-full bg-[#010101] relative">
+      <Canvas shadows camera={{ position: [300, 350, 400], fov: 42 }}>
+        <OrbitControls makeDefault maxPolarAngle={Math.PI / 2 - 0.05} minDistance={100} maxDistance={900} />
+        <ambientLight intensity={0.6} />
+        <pointLight position={[100, 300, 100]} intensity={15} color="#00ffcc" />
         
-        <Environment />
+        {/* Airspace Hazards, Ports, Structures */}
+        <Environment airspace={airspace} />
+        
+        {/* Dynamic distance vectors between close drones */}
         <DistanceLines taxis={taxis} />
         
+        {/* Taxis (Autopilot movement & smooth climbs) */}
         {taxis.map((taxi) => (
           <TaxiDrone key={taxi.id} taxi={taxi} />
         ))}
 
-        <fog attach="fog" args={['#010101', 100, 1000]} />
+        {/* 5. Symmetrical directional Flight Corridor 3D Decks */}
+        {/* Deck 50 - 500m (Cyan Grid) */}
+        <Grid 
+          position={[0, 50, 0]}
+          args={[1000, 1000]}
+          cellSize={100}
+          sectionSize={500}
+          sectionColor="#003740"
+          cellColor="#00181c"
+          fadeDistance={1000}
+          infiniteGrid
+        />
+        
+        {/* Deck 55 - 550m (Yellow Grid) */}
+        <Grid 
+          position={[0, 55, 0]}
+          args={[1000, 1000]}
+          cellSize={100}
+          sectionSize={500}
+          sectionColor="#3b3200"
+          cellColor="#171400"
+          fadeDistance={1000}
+          infiniteGrid
+        />
+
+        {/* Deck 60 - 600m (Magenta Grid) */}
+        <Grid 
+          position={[0, 60, 0]}
+          args={[1000, 1000]}
+          cellSize={100}
+          sectionSize={500}
+          sectionColor="#3b0033"
+          cellColor="#1c0018"
+          fadeDistance={1000}
+          infiniteGrid
+        />
+
+        {/* Deck 65 - 650m (Green Grid) */}
+        <Grid 
+          position={[0, 65, 0]}
+          args={[1000, 1000]}
+          cellSize={100}
+          sectionSize={500}
+          sectionColor="#00381a"
+          cellColor="#00170a"
+          fadeDistance={1000}
+          infiniteGrid
+        />
+
+        <fog attach="fog" args={['#010101', 200, 1200]} />
       </Canvas>
       
-      <div className="absolute top-4 left-4 font-mono text-[10px] text-[#00ffcc] bg-black/90 p-2 border border-[#00ffcc]/30 uppercase tracking-[0.2em]">
-        UAM_SPATIAL_V3 // LIVE_DISTANCE_TRACKING
+      <div className="absolute top-4 left-4 font-mono text-[9px] text-[#00ffcc] bg-black/90 p-2 border border-[#00ffcc]/30 uppercase tracking-[0.2em] pointer-events-none select-none">
+        UAM_SPATIAL_RADAR_V3 // ACTIVE_HAZARD_OVERLAYS
+      </div>
+      
+      {/* 3D Legenda overlay */}
+      <div className="absolute bottom-4 left-4 font-mono text-[8px] text-zinc-500 bg-black/90 p-2.5 border border-zinc-800 space-y-1.5 pointer-events-none select-none">
+        <div className="text-white font-bold tracking-wider mb-1 uppercase">Altitude Corridor Decks</div>
+        <div className="flex items-center gap-1.5"><div className="w-2.5 h-1.5 bg-[#00f6ff]" /> 500M CORRIDOR (EAST-WEST / SOUTH-NORTH)</div>
+        <div className="flex items-center gap-1.5"><div className="w-2.5 h-1.5 bg-[#ffd700]" /> 550M CORRIDOR (DIAGONAL SOUTHBOUND)</div>
+        <div className="flex items-center gap-1.5"><div className="w-2.5 h-1.5 bg-[#ff00dc]" /> 600M CORRIDOR (WEST-EAST / NORTH-SOUTH)</div>
+        <div className="flex items-center gap-1.5"><div className="w-2.5 h-1.5 bg-[#00ff78]" /> 650M CORRIDOR (DIAGONAL NORTHBOUND)</div>
       </div>
     </div>
   );

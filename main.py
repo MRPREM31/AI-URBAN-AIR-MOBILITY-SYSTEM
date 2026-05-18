@@ -49,8 +49,8 @@ BLUE = (0, 170, 255)
 GREEN = (0, 255, 120)
 RED = (255, 70, 70)
 YELLOW = (255, 255, 0)
-GRAY = (60, 60, 60)
-DARK_PANEL = (25, 25, 35)
+GRAY = (40, 40, 50)
+DARK_PANEL = (15, 15, 22)
 ORANGE = (255, 165, 0)
 PURPLE = (180, 0, 255)
 
@@ -72,8 +72,8 @@ LON_MAX = 79.0000
 # FONTS
 # =========================================================
 
-font = pygame.font.SysFont("Arial", 16)
-big_font = pygame.font.SysFont("Arial", 24)
+font = pygame.font.SysFont("Consolas", 14)
+big_font = pygame.font.SysFont("Consolas", 20)
 
 # =========================================================
 # CSV STORAGE
@@ -86,9 +86,7 @@ if not os.path.exists("data"):
     os.makedirs("data")
 
 with open(csv_file, mode="w", newline="") as file:
-
     writer = csv.writer(file)
-
     writer.writerow([
         "timestamp",
         "taxi_id",
@@ -99,21 +97,18 @@ with open(csv_file, mode="w", newline="") as file:
         "pickup",
         "drop",
         "collision",
-        "building_alert"
+        "building_alert",
+        "battery",
+        "status"
     ])
 
 with open(events_file, mode="w", newline="") as file:
-
     writer = csv.writer(file)
-
     writer.writerow(["timestamp", "event_type", "message"])
 
 def log_event(event_type, message):
-
     with open(events_file, mode="a", newline="") as file:
-
         writer = csv.writer(file)
-
         writer.writerow([
             datetime.now().strftime("%H:%M:%S"),
             event_type,
@@ -126,7 +121,6 @@ def log_event(event_type, message):
 # =========================================================
 
 skyports = [
-
     {"name": "Hebbal", "x": 500, "y": 80},
     {"name": "Malleshwaram", "x": 150, "y": 180},
     {"name": "Indiranagar", "x": 800, "y": 250},
@@ -135,7 +129,6 @@ skyports = [
     {"name": "HSR Layout", "x": 650, "y": 720},
     {"name": "Electronic City", "x": 950, "y": 800},
     {"name": "Jayanagar", "x": 250, "y": 700},
-
 ]
 
 # =========================================================
@@ -143,12 +136,23 @@ skyports = [
 # =========================================================
 
 buildings = [
-
     {"x": 300, "y": 220, "w": 80, "h": 250},
     {"x": 600, "y": 100, "w": 100, "h": 320},
     {"x": 750, "y": 500, "w": 120, "h": 260},
     {"x": 420, "y": 550, "w": 90, "h": 200},
+]
 
+# =========================================================
+# NO-FLY ZONES & WEATHER STORM CELLS (Aviation Hazards)
+# =========================================================
+
+no_fly_zones = [
+    {"name": "VIP Security Airspace (NFZ-A)", "x": 350, "y": 450, "radius": 100},
+    {"name": "Military Restriction (NFZ-B)", "x": 680, "y": 380, "radius": 75}
+]
+
+weather_cells = [
+    {"name": "Storm Alpha", "x": 550, "y": 450, "radius": 110, "dx": 0.4, "dy": -0.3}
 ]
 
 # =========================================================
@@ -156,16 +160,107 @@ buildings = [
 # =========================================================
 
 birds = []
-
 for i in range(12):
-
     birds.append({
-
         "x": random.randint(0, 1000),
         "y": random.randint(0, 800),
         "speed": random.uniform(1, 3)
-
     })
+
+# =========================================================
+# AVIATION ROUTING ALTITUDE CORRIDOR MATRICES
+# =========================================================
+
+def get_corridor_altitude(vx, vy):
+    """
+    Translates movement velocity vector into aviation directional altitude layers.
+    Symmetrical separations guarantee safety between opposite directions.
+    """
+    heading = math.degrees(math.atan2(vy, vx))
+    if heading < 0:
+        heading += 360
+        
+    # East (West -> East)
+    if heading >= 337.5 or heading < 22.5:
+        return 600
+    # South-East (North -> East / West -> South)
+    elif heading >= 22.5 and heading < 67.5:
+        return 550
+    # South (North -> South)
+    elif heading >= 67.5 and heading < 112.5:
+        return 600
+    # South-West (North -> West / East -> South)
+    elif heading >= 112.5 and heading < 157.5:
+        return 550
+    # West (East -> West)
+    elif heading >= 157.5 and heading < 202.5:
+        return 500
+    # North-West (East -> North / South -> West)
+    elif heading >= 202.5 and heading < 247.5:
+        return 650
+    # North (South -> North)
+    elif heading >= 247.5 and heading < 292.5:
+        return 500
+    # North-East (West -> North / South -> East)
+    elif heading >= 292.5 and heading < 337.5:
+        return 650
+        
+    return 500
+
+def get_altitude_color(alt):
+    """
+    Maps current altitude deck to signature color.
+    """
+    if alt >= 700:
+        return PURPLE          # Obstacle Avoidance Climb
+    elif alt >= 625:
+        return (0, 255, 120)   # Green (650m Corridor)
+    elif alt >= 575:
+        return (255, 0, 255)   # Magenta (600m Corridor)
+    elif alt >= 525:
+        return (255, 215, 0)   # Yellow (550m Corridor)
+    elif alt >= 475:
+        return (0, 255, 240)   # Cyan (500m Corridor)
+    else:
+        return RED             # Emergency Descent / Glide Slope
+
+# =========================================================
+# PATH RENDERING W/ ARROWS
+# =========================================================
+
+def draw_path_with_arrows(screen, start, end, color, width=1):
+    """
+    Draws custom flight corridors with directional arrow heads showing vector velocity.
+    """
+    dash_length = 8
+    gap_length = 5
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    dist = math.sqrt(dx**2 + dy**2)
+    if dist == 0:
+        return
+    
+    ux = dx / dist
+    uy = dy / dist
+    
+    # Dash pattern
+    curr = 0
+    while curr < dist:
+        step = min(dash_length, dist - curr)
+        p1 = (start[0] + ux * curr, start[1] + uy * curr)
+        p2 = (start[0] + ux * (curr + step), start[1] + uy * (curr + step))
+        pygame.draw.line(screen, color, p1, p2, width)
+        curr += dash_length + gap_length
+        
+    # Draw heading arrowhead halfway along path
+    if dist > 60:
+        ap = (start[0] + ux * (dist * 0.4), start[1] + uy * (dist * 0.4))
+        px = -uy
+        py = ux
+        v1 = (ap[0] - ux * 8, ap[1] - uy * 8)
+        v2 = (v1[0] + px * 5, v1[1] + py * 5)
+        v3 = (v1[0] - px * 5, v1[1] - py * 5)
+        pygame.draw.polygon(screen, color, [ap, v2, v3])
 
 # =========================================================
 # AIR TAXI CLASS
@@ -174,11 +269,12 @@ for i in range(12):
 class AirTaxi:
 
     def __init__(self, taxi_id):
-
         self.id = taxi_id
 
         start_port = random.choice(skyports)
         end_port = random.choice(skyports)
+        while end_port["name"] == start_port["name"]:
+            end_port = random.choice(skyports)
 
         self.x = start_port["x"]
         self.y = start_port["y"]
@@ -189,29 +285,30 @@ class AirTaxi:
         self.pickup = start_port["name"]
         self.drop = end_port["name"]
 
-        self.speed = random.uniform(1.5, 2.5)
+        # Vector Autopilot parameters
+        self.base_speed = random.uniform(1.8, 2.5)
+        self.speed = 0.5  # Start slow for smooth takeoff
 
-        self.altitude = random.randint(180, 350)
+        self.target_altitude = 500
+        self.altitude = 500
 
         self.color = BLUE
-
         self.collision = False
         self.building_alert = False
+        self.battery = 100.0
+        self.status = 'Flying'
+
+        # Repulsion and separation steering accumulators
+        self.steering_x = 0.0
+        self.steering_y = 0.0
 
     # =====================================================
     # GPS
     # =====================================================
 
     def get_gps(self):
-
-        latitude = LAT_MIN + (
-            self.y / HEIGHT
-        ) * (LAT_MAX - LAT_MIN)
-
-        longitude = LON_MIN + (
-            self.x / SIMULATION_WIDTH
-        ) * (LON_MAX - LON_MIN)
-
+        latitude = LAT_MIN + (self.y / HEIGHT) * (LAT_MAX - LAT_MIN)
+        longitude = LON_MIN + (self.x / SIMULATION_WIDTH) * (LON_MAX - LON_MIN)
         return round(latitude, 5), round(longitude, 5)
 
     # =====================================================
@@ -219,20 +316,99 @@ class AirTaxi:
     # =====================================================
 
     def move(self):
+        # 1. Reset steering accumulators
+        self.steering_x = 0.0
+        self.steering_y = 0.0
 
+        # 2. Desired velocity toward skyport
         dx = self.target_x - self.x
         dy = self.target_y - self.y
-
         distance = math.sqrt(dx ** 2 + dy ** 2)
 
         if distance != 0:
+            desired_vx = (dx / distance) * self.speed
+            desired_vy = (dy / distance) * self.speed
+        else:
+            desired_vx = 0.0
+            desired_vy = 0.0
 
+        # 3. Apply No-Fly Zone repulsion steering forces
+        in_any_nfz = False
+        for nfz in no_fly_zones:
+            n_dx = self.x - nfz["x"]
+            n_dy = self.y - nfz["y"]
+            n_dist = math.sqrt(n_dx**2 + n_dy**2)
+            if n_dist < nfz["radius"] + 35:
+                in_any_nfz = True
+                push_factor = (nfz["radius"] + 35 - n_dist) / (nfz["radius"] + 35)
+                push_x = n_dx / n_dist if n_dist > 0 else 1.0
+                push_y = n_dy / n_dist if n_dist > 0 else 0.0
+                self.steering_x += push_x * push_factor * 6.5
+                self.steering_y += push_y * push_factor * 6.5
+                self.status = 'Emerging'
+                
+                if not getattr(self, 'has_nofly_logged', False):
+                    log_event("AIRSPACE", f"RESTRICTION: {self.id} entered VIP zone buffer. Initiating boundary deflection turn.")
+                    self.has_nofly_logged = True
+        
+        if not in_any_nfz:
+            self.has_nofly_logged = False
+
+        # 4. Apply Weather Storm cell repulsion steering forces
+        in_any_storm = False
+        for storm in weather_cells:
+            s_dx = self.x - storm["x"]
+            s_dy = self.y - storm["y"]
+            s_dist = math.sqrt(s_dx**2 + s_dy**2)
+            if s_dist < storm["radius"] + 35:
+                in_any_storm = True
+                push_factor = (storm["radius"] + 35 - s_dist) / (storm["radius"] + 35)
+                push_x = s_dx / s_dist if s_dist > 0 else 1.0
+                push_y = s_dy / s_dist if s_dist > 0 else 0.0
+                self.steering_x += push_x * push_factor * 5.5
+                self.steering_y += push_y * push_factor * 5.5
+                self.status = 'Emerging'
+                
+                # Turbulance velocity penalty
+                self.speed = max(0.6, self.speed - 0.15)
+                
+                if not getattr(self, 'has_storm_logged', False):
+                    log_event("WEATHER", f"METEOROLOGY: {self.id} hit heavy storm cell. Engaging severe turbulence flight envelope.")
+                    self.has_storm_logged = True
+                    
+        if not in_any_storm:
+            self.has_storm_logged = False
+
+        # 5. Sum desired velocity and dynamic steering vectors
+        actual_vx = desired_vx + self.steering_x
+        actual_vy = desired_vy + self.steering_y
+
+        actual_dist = math.sqrt(actual_vx**2 + actual_vy**2)
+        if actual_dist > 0:
             current_speed = self.speed * speed_factor
-            self.x += (dx / distance) * current_speed
-            self.y += (dy / distance) * current_speed
+            self.x += (actual_vx / actual_dist) * current_speed
+            self.y += (actual_vy / actual_dist) * current_speed
 
-        # Reached destination
-        if distance < 10:
+        # 6. Smooth altitude deck transition
+        if not self.building_alert and not getattr(self, 'is_emergency_landing', False) and not getattr(self, 'cooperative_avoidance', False):
+            # Proactively select corridor target altitude from actual heading direction
+            self.target_altitude = get_corridor_altitude(actual_vx, actual_vy)
+
+        # Apply smooth altitude transition (Easing / LERP)
+        self.altitude += (self.target_altitude - self.altitude) * 0.05
+
+        # 7. Check if destination was reached
+        t_dx = self.target_x - self.x
+        t_dy = self.target_y - self.y
+        t_dist = math.sqrt(t_dx**2 + t_dy**2)
+
+        if t_dist < 15:
+            if getattr(self, 'is_emergency_landing', False):
+                # Diversion landing complete! Recharge battery and lift restrictions
+                log_event("ROUTE", f"EMERGENCY: {self.id} safely completed emergency diversion at {self.drop}.")
+                self.battery = 100.0
+                self.is_emergency_landing = False
+                self.status = 'Flying'
 
             new_target = random.choice(skyports)
             while new_target["name"] == self.drop:
@@ -246,136 +422,101 @@ class AirTaxi:
 
             self.target_x = new_target["x"]
             self.target_y = new_target["y"]
+            
+            # Reset takeoff speed
+            self.speed = 0.5
 
-            log_event("ROUTE", f"{self.id} safely landed at {old_drop}.")
-            log_event("ROUTE", f"{self.id} took off from {old_drop} heading to {self.drop}.")
+            log_event("ROUTE", f"TRAFFIC: {self.id} landed at {old_drop}. Transitioning routes to {self.drop}.")
 
     # =====================================================
     # BUILDING DETECTION
     # =====================================================
 
     def detect_buildings(self):
-
         self.building_alert = False
-
+        in_any_building = False
         for building in buildings:
-
             bx = building["x"]
             by = building["y"]
             bw = building["w"]
             bh = building["h"]
 
+            # Broad boundary box check
             if (
-
                 self.x > bx - 40 and
                 self.x < bx + bw + 40 and
                 self.y > by - 40 and
                 self.y < by + bh + 40
-
             ):
-
+                in_any_building = True
                 self.building_alert = True
-
-                self.altitude += 2
-
-                if self.altitude > 550:
-                    self.altitude = 550
-
+                self.target_altitude = 750
+                
                 if not getattr(self, 'has_building_alert_logged', False):
-                    log_event("BUILDING", f"{self.id} entered tall building proximity. Initiating climb to {int(self.altitude)}m.")
+                    log_event("BUILDING", f"OBSTACLE: {self.id} entered tower buffer zones. Activating climb profile (+750m).")
                     self.has_building_alert_logged = True
-                return
+                break
 
-        self.has_building_alert_logged = False
+        if not in_any_building:
+            self.has_building_alert_logged = False
 
     # =====================================================
     # DRAW
     # =====================================================
 
     def draw(self):
-
         latitude, longitude = self.get_gps()
+        color = get_altitude_color(self.altitude)
 
-        pygame.draw.line(
+        # 1. Real-time path corridors with direction indicators
+        draw_path_with_arrows(screen, (self.x, self.y), (self.target_x, self.target_y), color, width=2)
 
-            screen,
-            GRAY,
-            (self.x, self.y),
-            (self.target_x, self.target_y),
-            1
+        # 2. Pulsing safe distance collision circle
+        pulse = int(4 * math.sin(frame * 0.12))
+        bubble_radius = int(SAFE_DISTANCE // 2) + pulse
+        bubble_surf = pygame.Surface((bubble_radius*2, bubble_radius*2), pygame.SRCALPHA)
+        
+        # Transparent visual layers
+        bubble_color = (255, 0, 0, 30) if self.status == 'Critical' else (color[0], color[1], color[2], 20)
+        border_color = (255, 0, 0, 100) if self.status == 'Critical' else (color[0], color[1], color[2], 80)
+        
+        pygame.draw.circle(bubble_surf, bubble_color, (bubble_radius, bubble_radius), bubble_radius)
+        pygame.draw.circle(bubble_surf, border_color, (bubble_radius, bubble_radius), bubble_radius, 1)
+        screen.blit(bubble_surf, (int(self.x) - bubble_radius, int(self.y) - bubble_radius))
 
-        )
+        # 3. Aircraft indicator node
+        pygame.draw.circle(screen, BLACK, (int(self.x), int(self.y)), 10)
+        pygame.draw.circle(screen, color, (int(self.x), int(self.y)), 7)
 
-        pygame.draw.circle(
+        # Small nose-cone notch pointing forward
+        dx = self.target_x - self.x
+        dy = self.target_y - self.y
+        dist = math.sqrt(dx**2 + dy**2)
+        if dist > 0:
+            nx = dx / dist
+            ny = dy / dist
+            pygame.draw.line(screen, WHITE, (self.x, self.y), (self.x + nx * 10, self.y + ny * 10), 2)
 
-            screen,
-            self.color,
-            (int(self.x), int(self.y)),
-            12
+        # 4. Rich telemetry labeling text
+        label_y = self.y - 50
+        id_text = font.render(f"{self.id} | BATT: {int(self.battery)}%", True, WHITE)
+        alt_text = font.render(f"ALT: {int(self.altitude)}m", True, color)
+        status_text = font.render(f"SYS: {self.status}", True, RED if self.status == 'Critical' else YELLOW if self.status == 'Emerging' else GREEN)
+        route_text = font.render(f"{self.pickup} -> {self.drop}", True, (200, 200, 200))
 
-        )
-
-        id_text = font.render(
-            self.id,
-            True,
-            WHITE
-        )
-
-        screen.blit(
-            id_text,
-            (self.x + 15, self.y - 35)
-        )
-
-        gps_text = font.render(
-
-            f"Lat:{latitude} Lon:{longitude}",
-            True,
-            WHITE
-
-        )
-
-        screen.blit(
-            gps_text,
-            (self.x + 15, self.y - 15)
-        )
-
-        alt_text = font.render(
-
-            f"Alt:{int(self.altitude)}m",
-            True,
-            GREEN
-
-        )
-
-        screen.blit(
-            alt_text,
-            (self.x + 15, self.y + 5)
-        )
-
-        route_text = font.render(
-
-            f"{self.pickup} → {self.drop}",
-            True,
-            YELLOW
-
-        )
-
-        screen.blit(
-            route_text,
-            (self.x + 15, self.y + 25)
-        )
+        screen.blit(id_text, (self.x + 15, label_y))
+        screen.blit(alt_text, (self.x + 15, label_y + 13))
+        screen.blit(status_text, (self.x + 15, label_y + 26))
+        screen.blit(route_text, (self.x + 15, label_y + 39))
 
 # =========================================================
 # DISTANCE FUNCTION
 # =========================================================
 
 def calculate_distance(t1, t2):
-
     return math.sqrt(
-
         (t2.x - t1.x) ** 2 +
         (t2.y - t1.y) ** 2
-
     )
 
 # =========================================================
@@ -383,15 +524,13 @@ def calculate_distance(t1, t2):
 # =========================================================
 
 def save_data(taxi, collision, building_alert):
-
     latitude, longitude = taxi.get_gps()
-
+    battery = getattr(taxi, 'battery', 100.0)
+    status = getattr(taxi, 'status', 'Flying')
+    
     with open(csv_file, mode="a", newline="") as file:
-
         writer = csv.writer(file)
-
         writer.writerow([
-
             datetime.now().strftime("%H:%M:%S"),
             taxi.id,
             latitude,
@@ -401,8 +540,9 @@ def save_data(taxi, collision, building_alert):
             taxi.pickup,
             taxi.drop,
             collision,
-            building_alert
-
+            building_alert,
+            round(battery, 1),
+            status
         ])
 
 # =========================================================
@@ -410,9 +550,7 @@ def save_data(taxi, collision, building_alert):
 # =========================================================
 
 taxis = []
-
 for i in range(8):
-
     taxis.append(
         AirTaxi(f"TX{i+1}")
     )
@@ -460,9 +598,29 @@ while running:
     # =====================================================
 
     for event in pygame.event.get():
-
         if event.type == pygame.QUIT:
             running = False
+
+    # =====================================================
+    # UPDATE DYNAMIC AVIATION HAZARDS (Storm drifting)
+    # =====================================================
+    for storm in weather_cells:
+        storm["x"] += storm["dx"]
+        storm["y"] += storm["dy"]
+        
+        # Grid boundaries bounce mechanics
+        if storm["x"] < 150 or storm["x"] > 950:
+            storm["dx"] *= -1
+        if storm["y"] < 100 or storm["y"] > 800:
+            storm["dy"] *= -1
+
+    # Sync live weather position to JSON for API bridge consumption
+    if frame % 10 == 0:
+        try:
+            with open("data/weather.json", "w") as wf:
+                json.dump(weather_cells, wf)
+        except:
+            pass
 
     # =====================================================
     # DRAW SECTORS
@@ -485,37 +643,69 @@ while running:
     )
 
     sectors = [
-
         ("Sector A", 20, 20),
         ("Sector B", 570, 20),
         ("Sector C", 20, 470),
         ("Sector D", 570, 470),
-
     ]
 
     for text, x, y in sectors:
-
         label = big_font.render(
             text,
             True,
             GREEN
         )
-
         screen.blit(label, (x, y))
+
+    # =====================================================
+    # DRAW NO-FLY ZONES (Glowing barriers)
+    # =====================================================
+    for nfz in no_fly_zones:
+        nfz_surf = pygame.Surface((nfz["radius"]*2, nfz["radius"]*2), pygame.SRCALPHA)
+        # Pulse visual transparency
+        nfz_alpha = int(45 + 10 * math.sin(frame * 0.08))
+        pygame.draw.circle(nfz_surf, (255, 0, 0, nfz_alpha), (nfz["radius"], nfz["radius"]), nfz["radius"])
+        pygame.draw.circle(nfz_surf, (255, 0, 0, 180), (nfz["radius"], nfz["radius"]), nfz["radius"], 2)
+        
+        # Expanding dash boundary rings
+        dash_r = int((frame * 1.6) % nfz["radius"])
+        dash_alpha = int(120 * (1.0 - dash_r / nfz["radius"]))
+        pygame.draw.circle(nfz_surf, (255, 0, 0, dash_alpha), (nfz["radius"], nfz["radius"]), dash_r, 1)
+        screen.blit(nfz_surf, (nfz["x"] - nfz["radius"], nfz["y"] - nfz["radius"]))
+        
+        # Label indicator
+        nfz_lbl = font.render("RESTRICTED AIRSPACE (NO-FLY)", True, (255, 120, 120))
+        screen.blit(nfz_lbl, (nfz["x"] - 90, nfz["y"] - 10))
+
+    # =====================================================
+    # DRAW WEATHER STORM HAZARDS (Rain Radar sweeps)
+    # =====================================================
+    for storm in weather_cells:
+        storm_surf = pygame.Surface((storm["radius"]*2, storm["radius"]*2), pygame.SRCALPHA)
+        pygame.draw.circle(storm_surf, (0, 100, 255, 30), (storm["radius"], storm["radius"]), storm["radius"])
+        pygame.draw.circle(storm_surf, (0, 150, 255, 120), (storm["radius"], storm["radius"]), storm["radius"], 2)
+        
+        # Triple pulsing radar sweeps
+        for offset in [0, 40, 80]:
+            sweep_r = int((frame + offset) % storm["radius"])
+            sweep_a = int(90 * (1.0 - sweep_r / storm["radius"]))
+            pygame.draw.circle(storm_surf, (0, 180, 255, sweep_a), (storm["radius"], storm["radius"]), sweep_r, 1)
+            
+        screen.blit(storm_surf, (storm["x"] - storm["radius"], storm["y"] - storm["radius"]))
+        
+        storm_lbl = font.render("WEATHER STORM HAZARD (TURBULENCE)", True, (0, 200, 255))
+        screen.blit(storm_lbl, (storm["x"] - 105, storm["y"] - 10))
 
     # =====================================================
     # DRAW SKYPORTS
     # =====================================================
 
     for port in skyports:
-
         pygame.draw.circle(
-
             screen,
             GREEN,
             (port["x"], port["y"]),
             10
-
         )
 
         text = font.render(
@@ -534,38 +724,40 @@ while running:
     # =====================================================
 
     for building in buildings:
-
         pygame.draw.rect(
-
             screen,
-            PURPLE,
+            GRAY,
             (
-
                 building["x"],
                 building["y"],
                 building["w"],
                 building["h"]
-
             )
-
+        )
+        # Highlight top rim of skyscraper in purple
+        pygame.draw.rect(
+            screen,
+            PURPLE,
+            (
+                building["x"],
+                building["y"],
+                building["w"],
+                8
+            )
         )
 
         height_text = font.render(
-
-            "Tall Building",
+            "Tower (320m Deck)",
             True,
             WHITE
-
         )
 
         screen.blit(
-
             height_text,
             (
                 building["x"],
                 building["y"] - 20
             )
-
         )
 
     # =====================================================
@@ -573,14 +765,11 @@ while running:
     # =====================================================
 
     for bird in birds:
-
         bird["x"] += bird["speed"]
-
         if bird["x"] > 1050:
             bird["x"] = 0
 
         pygame.draw.circle(
-
             screen,
             WHITE,
             (
@@ -588,7 +777,6 @@ while running:
                 int(bird["y"])
             ),
             3
-
         )
 
     # =====================================================
@@ -596,125 +784,131 @@ while running:
     # =====================================================
 
     pygame.draw.rect(
-
         screen,
         DARK_PANEL,
         (1100, 0, 400, HEIGHT)
-
     )
 
     dashboard = big_font.render(
-
-        "AIR TRAFFIC DASHBOARD",
+        "AIR TRAFFIC COMMAND DECK",
         True,
         WHITE
-
     )
 
     screen.blit(dashboard, (1150, 20))
 
     # =====================================================
-    # MOVE TAXIS
+    # MOVE & INTEGRATE TAXIS
     # =====================================================
 
     for taxi in taxis:
-
-        taxi.move()
-
         taxi.detect_buildings()
 
-        # AI BUILDING AVOIDANCE
+        # 1. Autopilot Building Repulsions
         for building in buildings:
-
             avoid_building(taxi, building)
 
-        # TRAFFIC AI
+        # 2. Dynamic Corridor Separation Controls
         congestion_control(taxi, taxis)
 
-        # DECISION ENGINE
-        emergency_decision(taxi)
+        # 3. Emergency Divert Checks (Battery & Diversions)
+        emergency_decision(taxi, skyports)
 
+        # 4. Aerodynamic envelope caps
         stabilize_taxi(taxi)
 
+        # 5. Takeoff / Landing Glide optimization curves
         optimize_route(taxi)
 
-        # DANGER ZONE
+        # 6. Danger bubble density alerts
         if check_danger(taxi, taxis):
-
             draw_danger_zone(screen, taxi)
 
-        taxi.color = BLUE
+        # 7. Write low battery divert announcements to events.csv
+        if getattr(taxi, 'should_log_emergency', False):
+            log_event("COLLISION", f"EMERGENCY: {taxi.id} battery low ({int(taxi.battery)}%). Autopilot diverting to {taxi.drop}.")
+            taxi.should_log_emergency = False
 
+        # 8. Reset dynamic statuses to standard flight if clear of obstacles
+        if taxi.status in ['Emerging', 'Critical', 'Bypassing'] and not taxi.building_alert:
+            in_nfz = any(math.sqrt((taxi.x - nf["x"])**2 + (taxi.y - nf["y"])**2) < nf["radius"] + 35 for nf in no_fly_zones)
+            in_stm = any(math.sqrt((taxi.x - st["x"])**2 + (taxi.y - st["y"])**2) < st["radius"] + 35 for st in weather_cells)
+            if not in_nfz and not in_stm:
+                taxi.status = 'Flying'
+
+        # Move aircraft using resolved autopilot vectors
+        taxi.move()
+
+        # Reset immediate collision flags before predictive calculation runs
         taxi.collision = False
 
+        # Draw taxi node with custom layouts and telemetry HUD overlays
         taxi.draw()
 
     # =====================================================
-    # COLLISION DETECTION
+    # PREDICTIVE COLLISION LOOK-AHEAD PATH RUN
     # =====================================================
 
     collision_count = 0
     active_collisions_this_frame = set()
 
     for i in range(len(taxis)):
-
         for j in range(i + 1, len(taxis)):
-
             t1 = taxis[i]
             t2 = taxis[j]
 
+            # Look ahead predictive AI path conflict analysis
             risk = calculate_risk_score(t1, t2)
-
-            decision = ai_decision(
-                t1,
-                t2,
-                risk
-            )
+            decision = ai_decision(t1, t2, risk)
 
             if risk > 50:
-
                 collision_count += 1
-
-                t1.color = RED
-                t2.color = RED
-
                 t1.collision = True
                 t2.collision = True
+                
+                # Proactive speed-coordination deceleration during conflict resolution
+                t1.speed = max(0.7, t1.speed * 0.9)
+                t2.speed = max(0.7, t2.speed * 0.9)
+
+                # Dynamic warning color overrides
+                if risk > 80:
+                    t1.status = 'Critical'
+                    t2.status = 'Critical'
+                else:
+                    t1.status = 'Bypassing'
+                    t2.status = 'Bypassing'
 
                 pair_key = tuple(sorted([t1.id, t2.id]))
                 active_collisions_this_frame.add(pair_key)
 
                 if pair_key not in logged_collisions:
-                    action_taken = "Initiating active avoidance maneuvering."
-                    log_event("COLLISION", f"Collision threat detected between {t1.id} & {t2.id} (Risk: {risk}%). {action_taken}")
+                    action_taken = "Autopilot engaging collaborative vertical split corridors."
+                    log_category = "COLLISION" if risk > 80 else "AIRSPACE"
+                    log_event(log_category, f"CONFLICT: Proximity risk between {t1.id} & {t2.id} is {risk}%. {action_taken}")
                     logged_collisions.add(pair_key)
 
+                # Render dynamic visual look-ahead conflict line
+                line_color = RED if risk > 80 else ORANGE
                 pygame.draw.line(
-
                     screen,
-                    YELLOW,
+                    line_color,
                     (t1.x, t1.y),
                     (t2.x, t2.y),
                     3
-
                 )
 
                 warning = font.render(
-
-                    f"{decision}",
+                    f"{decision} ({risk}%)",
                     True,
-                    RED
-
+                    line_color
                 )
 
                 screen.blit(
-
                     warning,
                     (
-                        (t1.x + t2.x) // 2,
+                        (t1.x + t2.x) // 2 - 40,
                         (t1.y + t2.y) // 2
                     )
-
                 )
 
     for pair in list(logged_collisions):
@@ -722,7 +916,7 @@ while running:
             logged_collisions.remove(pair)
 
     # =====================================================
-    # SAVE DATA (EVERY 10 FRAMES FOR PERFORMANCE)
+    # SAVE TELESCOPED DATA (PERFORMANCE GLIDE)
     # =====================================================
 
     if frame % 10 == 0:
@@ -735,25 +929,21 @@ while running:
     frame += 1
 
     # =====================================================
-    # DASHBOARD DATA
+    # ATC TELEMETRY OVERLAYS
     # =====================================================
 
     active_text = big_font.render(
-
         f"Active Taxis: {len(taxis)}",
         True,
         GREEN
-
     )
 
     screen.blit(active_text, (1150, 80))
 
     collision_text = big_font.render(
-
-        f"Collision Alerts: {collision_count}",
+        f"Conflict Alerts: {collision_count}",
         True,
-        RED
-
+        RED if collision_count > 0 else GREEN
     )
 
     screen.blit(collision_text, (1150, 120))
@@ -761,16 +951,14 @@ while running:
     y_dashboard = 180
 
     for taxi in taxis:
-
+        color = get_altitude_color(taxi.altitude)
         info = font.render(
-
             f"{taxi.id} | "
             f"Alt:{int(taxi.altitude)}m | "
-            f"{taxi.pickup}->{taxi.drop}",
-
+            f"Batt:{int(taxi.battery)}% | "
+            f"{taxi.status}",
             True,
-            WHITE
-
+            color
         )
 
         screen.blit(

@@ -5,16 +5,16 @@ Write-Host "Starting Urban Air Taxi AI System..." -ForegroundColor Cyan
 
 # 1. Start Python Simulation (Background)
 Write-Host "Launching Simulation Engine (main.py)..." -ForegroundColor Yellow
-Start-Process python -ArgumentList "main.py" -WindowStyle Minimized
+Start-Process .\.venv\Scripts\python.exe -ArgumentList "main.py" -WindowStyle Minimized
 
 # 2. Start API Bridge (Background)
 Write-Host "Launching API Bridge (api.py)..." -ForegroundColor Green
-Start-Process python -ArgumentList "api.py" -WindowStyle Minimized
+Start-Process .\.venv\Scripts\python.exe -ArgumentList "api.py" -WindowStyle Minimized
 
 # 3. Start React Dashboard
 Write-Host "Launching Dashboard (React)..." -ForegroundColor Blue
 Set-Location dashboard
-Start-Process npm -ArgumentList "run dev -- --port 5173" -WindowStyle Minimized
+Start-Process cmd.exe -ArgumentList "/c npm run dev -- --port 5173" -WindowStyle Minimized
 
 Write-Host "`nALL SYSTEMS ARE RUNNING!" -ForegroundColor Magenta
 Write-Host "----------------------------------"
@@ -26,4 +26,4 @@ Write-Host "Wait 5 seconds for systems to initialize..."
 Start-Sleep -Seconds 5
 
 # Open browser to dashboard
-Start-Process "http://localhost:5173"
+Start-Process "explorer.exe" -ArgumentList "http://localhost:5173"
