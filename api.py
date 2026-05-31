@@ -210,6 +210,28 @@ def update_settings(settings: Settings):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/obstacles")
+def get_obstacles():
+    path = "data/obstacles.json"
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except:
+        return []
+
+@app.get("/camera_telemetry")
+def get_camera_telemetry():
+    path = "data/camera_telemetry.json"
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)

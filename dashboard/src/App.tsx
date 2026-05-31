@@ -47,6 +47,162 @@ const getAltitudeColor = (alt: number) => {
   return '#ff4646'; // Red (Emergency / Landing Descent)
 };
 
+interface CameraFeedProps {
+  taxiId: string | null;
+  cameraTelemetry: Record<string, any>;
+}
+
+function AirTaxiCameraFeed({ taxiId, cameraTelemetry }: CameraFeedProps) {
+  const [glitch, setGlitch] = useState(false);
+  const detection = taxiId ? cameraTelemetry[taxiId] : null;
+
+  useEffect(() => {
+    // Periodically trigger a quick 150ms screen glitch to represent real-time signal noise
+    const timer = setInterval(() => {
+      setGlitch(true);
+      setTimeout(() => setGlitch(false), 150);
+    }, randomBetween(5000, 12000));
+    return () => clearInterval(timer);
+  }, []);
+
+  function randomBetween(min: number, max: number) {
+    return Math.floor(Math.random() * (max - min + 1) + min);
+  }
+
+  // Draw simulated graphic vectors representing the scanned obstacle types inside the camera
+  function renderObstacleIcon(type: string) {
+    if (type.includes("Drone")) {
+      return (
+        <svg viewBox="0 0 100 100" className="w-16 h-16 text-red-500 animate-bounce">
+          <circle cx="50" cy="50" r="10" fill="none" stroke="currentColor" strokeWidth="2" />
+          <line x1="20" y1="20" x2="80" y2="80" stroke="currentColor" strokeWidth="2" />
+          <line x1="20" y1="80" x2="80" y2="20" stroke="currentColor" strokeWidth="2" />
+          <circle cx="20" cy="20" r="6" fill="currentColor" />
+          <circle cx="80" cy="20" r="6" fill="currentColor" />
+          <circle cx="20" cy="80" r="6" fill="currentColor" />
+          <circle cx="80" cy="80" r="6" fill="currentColor" />
+        </svg>
+      );
+    } else if (type.includes("Helicopter")) {
+      return (
+        <svg viewBox="0 0 100 100" className="w-16 h-16 text-orange-500">
+          <ellipse cx="50" cy="55" rx="25" ry="12" fill="none" stroke="currentColor" strokeWidth="2" />
+          <line x1="50" y1="43" x2="50" y2="35" stroke="currentColor" strokeWidth="2" />
+          <line x1="25" y1="55" x2="15" y2="70" stroke="currentColor" strokeWidth="2" />
+          <line x1="75" y1="55" x2="85" y2="70" stroke="currentColor" strokeWidth="2" />
+          <line x1="10" y1="70" x2="90" y2="70" stroke="currentColor" strokeWidth="2" />
+        </svg>
+      );
+    } else if (type.includes("Balloon")) {
+      return (
+        <svg viewBox="0 0 100 100" className="w-16 h-16 text-yellow-500 animate-pulse">
+          <circle cx="50" cy="45" r="22" fill="none" stroke="currentColor" strokeWidth="2" />
+          <path d="M 40 65 L 60 65 L 54 80 L 46 80 Z" fill="none" stroke="currentColor" strokeWidth="2" />
+          <line x1="40" y1="55" x2="40" y2="65" stroke="currentColor" strokeWidth="1" />
+          <line x1="60" y1="55" x2="60" y2="65" stroke="currentColor" strokeWidth="1" />
+        </svg>
+      );
+    } else {
+      return (
+        <svg viewBox="0 0 100 100" className="w-16 h-16 text-cyan-400">
+          <path d="M 20 50 Q 35 30 50 50 Q 65 30 80 50" fill="none" stroke="currentColor" strokeWidth="2" className="animate-pulse" />
+          <path d="M 30 65 Q 42 50 54 65 Q 66 50 78 65" fill="none" stroke="currentColor" strokeWidth="1.5" />
+        </svg>
+      );
+    }
+  }
+
+  return (
+    <div className="border border-zinc-800 bg-[#07070a] p-3 font-mono rounded-none">
+      <div className="flex items-center justify-between pb-2 border-b border-zinc-800 mb-2.5">
+        <span className="text-[10px] font-black uppercase tracking-wider text-zinc-400 flex items-center gap-1.5">
+          <span className={`w-1.5 h-1.5 rounded-full ${taxiId ? 'bg-green-500 animate-pulse' : 'bg-zinc-600'}`} />
+          {taxiId ? `ONBOARD_OPTICAL_FEED // ${taxiId}` : 'NO TARGET LINK CONNECTED'}
+        </span>
+        <span className="text-[8px] text-zinc-600 font-bold uppercase tracking-widest">
+          {detection ? 'LOCK_ACQUIRED' : 'SCANNING_AIRSPACE'}
+        </span>
+      </div>
+
+      <div className="relative aspect-[16/10] bg-[#020203] border border-zinc-900 overflow-hidden flex items-center justify-center">
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[size:100%_4px,3px_100%] pointer-events-none z-10" />
+
+        {(glitch || !taxiId) && (
+          <div className="absolute inset-0 bg-[#08080c] opacity-80 z-20 flex flex-col items-center justify-center">
+            <div className="w-full h-0.5 bg-zinc-700/30 animate-bounce" />
+            <div className="text-[9px] font-black text-zinc-700 tracking-[0.3em] uppercase select-none animate-pulse">
+              {!taxiId ? 'SYS_FEED_OFFLINE' : 'STATIC_INTERFERENCE_RECONNECTING'}
+            </div>
+            <div className="w-full h-0.5 bg-zinc-700/30 animate-ping mt-4" />
+          </div>
+        )}
+
+        {taxiId && (
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute top-3 left-3 w-4 h-4 border-t-2 border-l-2 border-zinc-700" />
+            <div className="absolute top-3 right-3 w-4 h-4 border-t-2 border-r-2 border-zinc-700" />
+            <div className="absolute bottom-3 left-3 w-4 h-4 border-b-2 border-l-2 border-zinc-700" />
+            <div className="absolute bottom-3 right-3 w-4 h-4 border-b-2 border-r-2 border-zinc-700" />
+            
+            <div className="absolute top-1/2 left-1/2 w-8 h-8 border border-dashed border-zinc-800 -translate-x-1/2 -translate-y-1/2 rounded-full" />
+            <div className="absolute top-1/2 left-1/2 w-1.5 h-1.5 bg-zinc-800 -translate-x-1/2 -translate-y-1/2 rounded-full" />
+          </div>
+        )}
+
+        {taxiId ? (
+          detection ? (
+            <div className="flex flex-col items-center justify-center animate-pulse z-0">
+              <div className="absolute border border-red-500/40 w-24 h-24 flex items-center justify-center">
+                <div className="absolute top-0 left-0 w-2.5 h-2.5 border-t-2 border-l-2 border-red-500" />
+                <div className="absolute top-0 right-0 w-2.5 h-2.5 border-t-2 border-r-2 border-red-500" />
+                <div className="absolute bottom-0 left-0 w-2.5 h-2.5 border-b-2 border-l-2 border-red-500" />
+                <div className="absolute bottom-0 right-0 w-2.5 h-2.5 border-b-2 border-r-2 border-red-500" />
+                
+                {renderObstacleIcon(detection.predicted_class)}
+              </div>
+              <span className="text-[7px] text-red-500/60 absolute bottom-4 select-none font-bold uppercase tracking-[0.25em]">TARGET LOCK ACQUIRED</span>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center text-center opacity-40 z-0">
+              <Crosshair className="w-10 h-10 text-cyan-500/60 animate-spin" style={{ animationDuration: '8s' }} />
+              <span className="text-[8px] text-cyan-400 tracking-[0.2em] font-bold mt-2 uppercase">Airspace Safe // Monitoring Lanes</span>
+            </div>
+          )
+        ) : (
+          <div className="text-[8px] text-zinc-600 tracking-wider text-center select-none uppercase leading-relaxed max-w-xs">
+            Connect link to start UAM forward optical sensor streams
+          </div>
+        )}
+      </div>
+
+      {taxiId && (
+        <div className="mt-2.5 pt-2 border-t border-zinc-900 grid grid-cols-12 gap-2 text-[9px]">
+          {detection ? (
+            <>
+              <div className="col-span-6 space-y-1">
+                <span className="text-zinc-500 uppercase block text-[8px]">AI_Classification</span>
+                <span className="text-red-400 font-bold block truncate">{detection.predicted_class.toUpperCase()}</span>
+                <span className="text-zinc-600 block text-[7px] leading-tight uppercase font-semibold">CONFIDENCE: {detection.confidence}%</span>
+              </div>
+              
+              <div className="col-span-6 space-y-1 pl-2.5 border-l border-zinc-900">
+                <span className="text-zinc-500 uppercase block text-[8px]">AutoPilot_Decision</span>
+                <span className="text-yellow-500 font-bold block animate-pulse">BANKING_LATERAL</span>
+                <span className="text-white block text-[7px] leading-tight uppercase font-semibold">BYPASSING CORRIDOR Y BY 75M</span>
+              </div>
+            </>
+          ) : (
+            <div className="col-span-12 py-1.5 flex items-center justify-between text-zinc-500 bg-zinc-950/20 px-2">
+              <span className="flex items-center gap-1.5 animate-pulse"><div className="w-1 h-1 rounded-full bg-cyan-400" /> AP_CORRIDOR_STEERING: ACTIVE</span>
+              <span className="text-[8px]">STATUS: OK</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function UrbanAirTaxiDashboard() {
   const [taxis, setTaxis] = useState<Taxi[]>([]);
   const [airspace, setAirspace] = useState<Airspace | null>(null);
@@ -55,6 +211,8 @@ export default function UrbanAirTaxiDashboard() {
   const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString());
   const [events, setEvents] = useState<any[]>([]);
   const [slowDown, setSlowDown] = useState(false);
+  const [obstacles, setObstacles] = useState<any[]>([]);
+  const [cameraTelemetry, setCameraTelemetry] = useState<Record<string, any>>({});
 
   // Advanced Interactive States
   const [selectedTaxiId, setSelectedTaxiId] = useState<string | null>(null);
@@ -159,6 +317,24 @@ export default function UrbanAirTaxiDashboard() {
       if (!eventsData.error) {
         setEvents(eventsData);
       }
+
+      // Fetch dynamic unregistered obstacles
+      try {
+        const obsRes = await fetch("http://127.0.0.1:8000/obstacles");
+        const obsData = await obsRes.json();
+        if (Array.isArray(obsData)) {
+          setObstacles(obsData);
+        }
+      } catch (e) {}
+
+      // Fetch camera telemetry
+      try {
+        const camRes = await fetch("http://127.0.0.1:8000/camera_telemetry");
+        const camData = await camRes.json();
+        if (camData && !camData.error) {
+          setCameraTelemetry(camData);
+        }
+      } catch (e) {}
     } catch (error) {
       console.error("ATC_LINK_FAILURE:", error);
     }
@@ -414,6 +590,79 @@ export default function UrbanAirTaxiDashboard() {
                     </g>
                   ))}
 
+                  {/* Dynamic Unregistered Camera obstacles */}
+                  {obstacles?.map((obs) => {
+                    const radius = obs.size ? obs.size + 6 : 8;
+                    return (
+                      <g key={obs.id}>
+                        <circle 
+                          cx={obs.x} 
+                          cy={obs.y} 
+                          r={radius} 
+                          fill="rgba(239, 68, 68, 0.1)" 
+                          stroke="#ef4444" 
+                          strokeWidth="1.5" 
+                          className="animate-pulse" 
+                        />
+                        <circle cx={obs.x} cy={obs.y} r="2" fill="#ef4444" />
+                        <rect 
+                          x={obs.x - radius - 2} 
+                          y={obs.y - radius - 2} 
+                          width={radius * 2 + 4} 
+                          height={radius * 2 + 4} 
+                          fill="none" 
+                          stroke="#f97316" 
+                          strokeWidth="0.5" 
+                          strokeDasharray="2,2" 
+                        />
+                        <text 
+                          x={obs.x + radius + 6} 
+                          y={obs.y + 3} 
+                          fill="#ef4444" 
+                          fontSize="7" 
+                          fontWeight="black" 
+                          letterSpacing="0.5px"
+                        >
+                          {obs.id} : {obs.type.toUpperCase()}
+                        </text>
+                      </g>
+                    );
+                  })}
+
+                  {/* Active UAM Optical Target Acquisition Lines & Reticles */}
+                  {taxis.map((taxi) => {
+                    const det = cameraTelemetry[taxi.id];
+                    if (!det) return null;
+                    const tx = (taxi.longitude - 78.0) * 1100;
+                    const ty = (taxi.latitude - 17.0) * 900;
+                    
+                    return (
+                      <g key={`det-line-${taxi.id}`}>
+                        <line 
+                          x1={tx} 
+                          y1={ty} 
+                          x2={det.x} 
+                          y2={det.y} 
+                          stroke="#ef4444" 
+                          strokeWidth="1.2" 
+                          strokeDasharray="3,1" 
+                          className="animate-pulse" 
+                        />
+                        <g transform={`translate(${det.x}, ${det.y})`}>
+                          <path d="M -12 -6 L -12 -12 L -6 -12" fill="none" stroke="#ef4444" strokeWidth="1.5" />
+                          <path d="M 6 -12 L 12 -12 L 12 -6" fill="none" stroke="#ef4444" strokeWidth="1.5" />
+                          <path d="M 12 6 L 12 12 L 6 12" fill="none" stroke="#ef4444" strokeWidth="1.5" />
+                          <path d="M -6 12 L -12 12 L -12 6" fill="none" stroke="#ef4444" strokeWidth="1.5" />
+                          
+                          <rect x="-42" y="-23" width="84" height="10" fill="rgba(2, 2, 2, 0.9)" stroke="#ef4444" strokeWidth="0.5" />
+                          <text x="0" y="-15" fill="#ef4444" fontSize="6.5" fontWeight="bold" textAnchor="middle">
+                            [AI:{det.predicted_class.toUpperCase()} {det.confidence}%]
+                          </text>
+                        </g>
+                      </g>
+                    );
+                  })}
+
                   {/* Skyports with Hyderabad place labels */}
                   {airspace?.skyports.map((p, idx) => (
                     <g key={`p-${idx}`}>
@@ -543,6 +792,27 @@ export default function UrbanAirTaxiDashboard() {
                           style={{ cursor: 'pointer' }} 
                           onClick={() => setSelectedTaxiId(taxi.id)}
                         >
+                          {/* Projecting Camera Scanning Cone (projecting forward) */}
+                          {(() => {
+                            const isDetecting = !!cameraTelemetry[taxi.id];
+                            const coneFill = isDetecting ? 'rgba(239, 68, 68, 0.08)' : 'rgba(0, 255, 204, 0.035)';
+                            const coneStroke = isDetecting ? 'rgba(239, 68, 68, 0.3)' : 'rgba(0, 255, 204, 0.12)';
+                            return (
+                              <g>
+                                <path 
+                                  d="M 0 0 L -80 -138.56 A 160 160 0 0 1 80 -138.56 Z" 
+                                  fill={coneFill} 
+                                  stroke={coneStroke} 
+                                  strokeWidth="1"
+                                  strokeDasharray={isDetecting ? "none" : "3,3"}
+                                />
+                                {isDetecting && (
+                                  <line x1="0" y1="0" x2="0" y2="-160" stroke="#ef4444" strokeWidth="0.8" strokeDasharray="2,2" className="animate-pulse" />
+                                )}
+                              </g>
+                            );
+                          })()}
+
                           {/* Rotor cross arm guards */}
                           <line x1="-10" y1="-10" x2="10" y2="10" stroke={activeColor} strokeWidth="1.5" />
                           <line x1="-10" y1="10" x2="10" y2="-10" stroke={activeColor} strokeWidth="1.5" />
@@ -650,6 +920,12 @@ export default function UrbanAirTaxiDashboard() {
         {/* SIDEBAR - SURVEILLANCE & FLEET DECKS */}
         <div className="lg:col-span-3 space-y-4">
           
+          {/* LIVE CAMERA FEED MONITOR PANEL */}
+          <AirTaxiCameraFeed 
+            taxiId={selectedTaxiId} 
+            cameraTelemetry={cameraTelemetry} 
+          />
+
           {/* UAM INFORMATION PANEL (VISIBLE ON SELECTION) */}
           <AnimatePresence mode="wait">
             {selectedTaxiId && (() => {
@@ -764,6 +1040,41 @@ export default function UrbanAirTaxiDashboard() {
                       </div>
                     </div>
                   </div>
+
+                  {/* Onboard Camera Telemetry */}
+                  {(() => {
+                    const cam = cameraTelemetry[activeTaxi.id];
+                    if (!cam) return null;
+                    return (
+                      <div className="border border-red-950/40 bg-red-950/5 p-2.5 mb-3 text-[9px] font-mono shadow-inner">
+                        <div className="text-red-400 font-black tracking-wider uppercase mb-1.5 flex items-center gap-1.5 animate-pulse">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                          Onboard Optical Target Lock
+                        </div>
+                        <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-zinc-400 text-[8px]">
+                          <div>
+                            <span className="text-zinc-600 block uppercase">Target ID</span>
+                            <span className="text-white font-bold">{cam.obstacle_id}</span>
+                          </div>
+                          <div>
+                            <span className="text-zinc-600 block uppercase">Classification</span>
+                            <span className="text-red-400 font-bold">{cam.predicted_class}</span>
+                          </div>
+                          <div>
+                            <span className="text-zinc-600 block uppercase">Distance</span>
+                            <span className="text-white font-bold">{cam.distance}m</span>
+                          </div>
+                          <div>
+                            <span className="text-zinc-600 block uppercase">Confidence</span>
+                            <span className="text-red-400 font-bold">{cam.confidence}%</span>
+                          </div>
+                          <div className="col-span-2 mt-1 pt-1 border-t border-red-950/20 text-[7px] leading-tight text-zinc-500">
+                            {cam.description.toUpperCase()}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div className="space-y-2 text-[9px] mb-2">
                     <div className="flex justify-between">

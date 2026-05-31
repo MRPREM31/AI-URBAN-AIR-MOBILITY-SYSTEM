@@ -17,6 +17,7 @@ from ai.danger_zone import *
 from ai.traffic_ai import *
 from ai.decision_engine import *
 from ai.route_optimizer import *
+from ai.camera_sensor import detect_in_camera_fov
 
 # =========================================================
 # INITIALIZE
@@ -171,6 +172,41 @@ for i in range(12):
     })
 
 # =========================================================
+# UNREGISTERED OBSTACLES (DYNAMIC HAZARDS)
+# =========================================================
+
+unregistered_obstacles = []
+obstacle_types = [
+    {"type": "Unregistered Drone", "speed_range": (2.0, 4.0), "size_range": (1.0, 3.0)},
+    {"type": "Weather Balloon", "speed_range": (0.3, 0.8), "size_range": (6.0, 10.0)},
+    {"type": "Helicopter", "speed_range": (5.0, 8.0), "size_range": (14.0, 20.0)}
+]
+
+def spawn_sudden_obstacle():
+    ot = random.choice(obstacle_types)
+    obs_id = f"OBS-{random.randint(100, 999)}"
+    speed = random.uniform(*ot["speed_range"])
+    size = random.uniform(*ot["size_range"])
+    
+    unregistered_obstacles.append({
+        "id": obs_id,
+        "type": ot["type"],
+        "x": random.randint(200, 900),
+        "y": random.randint(150, 750),
+        "dx": random.choice([-1.0, 1.0]) * random.uniform(0.5, 1.0),
+        "dy": random.choice([-1.0, 1.0]) * random.uniform(0.5, 1.0),
+        "speed": speed,
+        "size": size,
+        "timestamp": datetime.now().strftime("%H:%M:%S")
+    })
+    log_event("AIRSPACE", f"WARNING: Sudden unregistered dynamic hazard {obs_id} ({ot['type']}) detected in aviation corridor.")
+
+# Start with a couple of obstacles initially
+for _ in range(4):
+    spawn_sudden_obstacle()
+
+
+# =========================================================
 # AVIATION ROUTING ALTITUDE CORRIDOR MATRICES
 # =========================================================
 
@@ -304,6 +340,7 @@ class AirTaxi:
         # Repulsion and separation steering accumulators
         self.steering_x = 0.0
         self.steering_y = 0.0
+        self.camera_detection = None
 
     # =====================================================
     # GPS
@@ -638,6 +675,16 @@ while running:
         try:
             with open("data/weather.json", "w") as wf:
                 json.dump(weather_cells, wf)
+            with open("data/obstacles.json", "w") as of:
+                json.dump(unregistered_obstacles, of)
+            
+            # Write camera telemetry
+            camera_telemetry = {}
+            for t in taxis:
+                if t.camera_detection:
+                    camera_telemetry[t.id] = t.camera_detection
+            with open("data/camera_telemetry.json", "w") as cf:
+                json.dump(camera_telemetry, cf)
         except:
             pass
 
@@ -819,6 +866,31 @@ while running:
         )
 
     # =====================================================
+    # DRAW & UPDATE UNREGISTERED OBSTACLES
+    # =====================================================
+
+    for obs in unregistered_obstacles:
+        obs["x"] += obs["dx"] * obs["speed"]
+        obs["y"] += obs["dy"] * obs["speed"]
+        
+        if obs["x"] < 50 or obs["x"] > 1050:
+            obs["dx"] *= -1
+        if obs["y"] < 50 or obs["y"] > 850:
+            obs["dy"] *= -1
+            
+        # Draw dynamic target bubble
+        pulse_val = int(2 * math.sin(frame * 0.15))
+        pygame.draw.circle(screen, (255, 69, 0), (int(obs["x"]), int(obs["y"])), int(obs["size"] + 6 + pulse_val), 2)
+        pygame.draw.circle(screen, RED, (int(obs["x"]), int(obs["y"])), 3)
+        
+        obs_lbl = font.render(f"{obs['id']}:{obs['type'][:5]}", True, RED)
+        screen.blit(obs_lbl, (int(obs["x"]) + 10, int(obs["y"]) - 10))
+
+    if frame % 250 == 0 and len(unregistered_obstacles) < 6:
+        spawn_sudden_obstacle()
+
+
+    # =====================================================
     # DASHBOARD
     # =====================================================
 
@@ -855,6 +927,39 @@ while running:
 
         # 2b. Dynamic Airspace Congestion Avoidance Rerouting
         apply_congestion_avoidance(taxi, congested_zones)
+
+        # 2c. Camera sensor dynamic evasive detouring
+        all_hazards = [{"id": f"BIRD-{idx}", "x": b["x"], "y": b["y"], "speed": b["speed"], "size": 2.0} for idx, b in enumerate(birds)] + unregistered_obstacles
+        taxi.camera_detection = detect_in_camera_fov(taxi, all_hazards, fov_angle=60, fov_range=160)
+        
+        if taxi.camera_detection:
+            obs_x = taxi.camera_detection["x"]
+            obs_y = taxi.camera_detection["y"]
+            obs_id = taxi.camera_detection["obstacle_id"]
+            obs_dx = obs_x - taxi.x
+            obs_dy = obs_y - taxi.y
+            perp_x = -obs_dy
+            perp_y = obs_dx
+            dist = math.sqrt(perp_x**2 + perp_y**2)
+            if dist > 0:
+                taxi.detour_x = obs_x + (perp_x / dist) * 75
+                taxi.detour_y = obs_y + (perp_y / dist) * 75
+                taxi.detouring = True
+                taxi.status = 'Detouring'
+                taxi.speed = max(0.8, taxi.speed * 0.85)
+                if not getattr(taxi, 'has_camera_logged', False) or getattr(taxi, 'last_logged_obs', '') != obs_id:
+                    log_event("COLLISION", f"CAMERA: {taxi.id} onboard optical AI predicted a '{taxi.camera_detection['predicted_class']}' ({taxi.camera_detection['confidence']}% conf) at {taxi.camera_detection['distance']}m. Banking to evasive waypoint.")
+                    taxi.has_camera_logged = True
+                    taxi.last_logged_obs = obs_id
+        else:
+            if getattr(taxi, 'detouring', False):
+                tdx = taxi.detour_x - taxi.x
+                tdy = taxi.detour_y - taxi.y
+                tdist = math.sqrt(tdx**2 + tdy**2)
+                if tdist < 15:
+                    taxi.detouring = False
+                    taxi.status = 'Flying'
+                    taxi.has_camera_logged = False
 
         # 3. Emergency Divert Checks (Battery & Diversions)
         emergency_decision(taxi, skyports)
