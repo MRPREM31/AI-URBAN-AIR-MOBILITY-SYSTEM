@@ -1,4 +1,4 @@
-import { useRef, useMemo } from 'react';
+import React, { useRef, useMemo } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Stars, Float, Text, Trail, Grid, Sky } from '@react-three/drei';
 import * as THREE from 'three';
@@ -355,7 +355,7 @@ function Environment({ airspace }: { airspace: Airspace | null }) {
   );
 }
 
-export default function Airspace3D({ taxis, airspace, selectedTaxiId }: Airspace3DProps) {
+export function Airspace3D({ taxis, airspace, selectedTaxiId }: Airspace3DProps) {
   const selectedTaxi = selectedTaxiId ? taxis.find(t => t.id === selectedTaxiId) : null;
   const selectedPos = selectedTaxi ? getPos(selectedTaxi) : null;
 
@@ -468,3 +468,45 @@ export default function Airspace3D({ taxis, airspace, selectedTaxiId }: Airspace
     </div>
   );
 }
+
+class Airspace3DErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: Error | null }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("3D RADAR ERROR CAUGHT:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="w-full h-full bg-[#050508] border border-red-950/40 flex flex-col items-center justify-center p-6 text-center font-mono">
+          <div className="w-10 h-10 rounded-full bg-red-950/30 border border-red-500/40 flex items-center justify-center text-red-400 text-sm mb-3">⚠️</div>
+          <div className="text-[10px] font-black tracking-wider text-red-400 uppercase">3D Radar System Offline</div>
+          <div className="text-[8px] text-zinc-500 mt-2 max-w-md uppercase leading-relaxed">
+            {this.state.error?.message || "WebGL initialization failed or is not supported by your browser/environment."}
+          </div>
+          <div className="text-[9px] text-[#00ffcc] mt-4 uppercase font-bold">
+            Displaying safe 2D Radar fallback.
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function Airspace3DWithBoundary(props: Airspace3DProps) {
+  return (
+    <Airspace3DErrorBoundary>
+      <Airspace3D {...props} />
+    </Airspace3DErrorBoundary>
+  );
+}
+

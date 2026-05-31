@@ -51,7 +51,7 @@ export default function UrbanAirTaxiDashboard() {
   const [taxis, setTaxis] = useState<Taxi[]>([]);
   const [airspace, setAirspace] = useState<Airspace | null>(null);
   const [history, setHistory] = useState<any[]>([]);
-  const [viewMode, setViewMode] = useState<'2D' | '3D'>('3D');
+  const [viewMode, setViewMode] = useState<'2D' | '3D'>('2D');
   const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString());
   const [events, setEvents] = useState<any[]>([]);
   const [slowDown, setSlowDown] = useState(false);
