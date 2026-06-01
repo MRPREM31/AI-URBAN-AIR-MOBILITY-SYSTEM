@@ -39,19 +39,19 @@ const getAltitudeColor = (alt: number) => {
 
 function getPos(taxi: Taxi): [number, number, number] {
   return [
-    (taxi.longitude - 78.5) * 1000,
+    (taxi.longitude - 77.625) * 2000,
     taxi.altitude / 10,
-    (taxi.latitude - 17.5) * 1000
+    (taxi.latitude - 13.00) * 2000
   ];
 }
 
 function mapPygameCoords(x: number, y: number): [number, number] {
   // Converts 2D Pygame coordinates to 3D (x, z) coordinates matching getPos mapping precisely
-  const longitude = 78.0 + (x / 1100);
-  const latitude = 17.0 + (y / 900);
+  const longitude = 77.4000 + (x / 1100.0) * (77.8500 - 77.4000);
+  const latitude = 12.8500 + (y / 900.0) * (13.1500 - 12.8500);
   return [
-    (longitude - 78.5) * 1000,
-    (latitude - 17.5) * 1000
+    (longitude - 77.625) * 2000,
+    (latitude - 13.00) * 2000
   ];
 }
 

@@ -20,19 +20,20 @@ from ai.route_optimizer import *
 from ai.camera_sensor import detect_in_camera_fov
 
 # =========================================================
-# INITIALIZE
-# =========================================================
-
-pygame.init()
-
-# =========================================================
-# SCREEN SETTINGS
+# INITIALIZE & SCREEN SETTINGS
 # =========================================================
 
 WIDTH = 1500
 HEIGHT = 900
 
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
+try:
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+except Exception:
+    import os
+    os.environ["SDL_VIDEODRIVER"] = "dummy"
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
 
 pygame.display.set_caption(
     "AI Urban Air Taxi Simulation"
@@ -63,11 +64,11 @@ SIMULATION_WIDTH = 1100
 
 SAFE_DISTANCE = 90
 
-LAT_MIN = 17.0000
-LAT_MAX = 18.0000
+LAT_MIN = 12.8500
+LAT_MAX = 13.1500
 
-LON_MIN = 78.0000
-LON_MAX = 79.0000
+LON_MIN = 77.4000
+LON_MAX = 77.8500
 
 # =========================================================
 # FONTS
@@ -201,9 +202,9 @@ def spawn_sudden_obstacle():
     })
     log_event("AIRSPACE", f"WARNING: Sudden unregistered dynamic hazard {obs_id} ({ot['type']}) detected in aviation corridor.")
 
-# Start with a couple of obstacles initially
-for _ in range(4):
-    spawn_sudden_obstacle()
+# Start with a couple of obstacles initially (Disabled - Obstacles removed from simulation)
+# for _ in range(4):
+#     spawn_sudden_obstacle()
 
 
 # =========================================================
@@ -616,6 +617,7 @@ for i in range(8):
 
 logged_collisions = set()
 congested_zones = []
+weather_info = None
 
 speed_factor = 1.0
 last_slow_down = False
@@ -644,6 +646,15 @@ while running:
             else:
                 log_event("SYSTEM", "Air Traffic Control lifted speed restriction. All UAM units resumed standard flight velocities.")
             last_slow_down = slow_down
+
+    if frame % 60 == 0:
+        weather_path = "data/weather_info.json"
+        if os.path.exists(weather_path):
+            try:
+                with open(weather_path, "r") as f:
+                    weather_info = json.load(f)
+            except:
+                pass
 
     clock.tick(60)
 
@@ -886,8 +897,9 @@ while running:
         obs_lbl = font.render(f"{obs['id']}:{obs['type'][:5]}", True, RED)
         screen.blit(obs_lbl, (int(obs["x"]) + 10, int(obs["y"]) - 10))
 
-    if frame % 250 == 0 and len(unregistered_obstacles) < 6:
-        spawn_sudden_obstacle()
+    # Spawning periodic sudden obstacles disabled
+    # if frame % 250 == 0 and len(unregistered_obstacles) < 6:
+    #     spawn_sudden_obstacle()
 
 
     # =====================================================
@@ -927,6 +939,47 @@ while running:
 
         # 2b. Dynamic Airspace Congestion Avoidance Rerouting
         apply_congestion_avoidance(taxi, congested_zones)
+
+        # 2bb. AI Weather-Aware Routing & Safety Controls
+        if weather_info:
+            wind = weather_info.get("wind_speed", 0.0)
+            cond = weather_info.get("weather_condition", "Clear")
+            
+            # High wind rule: reroute/stabilize by forcing a lower target altitude and slowing down
+            if wind > 40.0:
+                taxi.target_altitude = min(taxi.target_altitude, 480)
+                taxi.speed = max(0.5, taxi.speed * 0.7)
+                if not getattr(taxi, 'high_wind_alert_logged', False):
+                    log_event("WEATHER", f"WEATHER ALERT: {taxi.id} wind speed is {wind} km/h (exceeds 40 km/h). Cruising altitude lowered and speed reduced.")
+                    taxi.high_wind_alert_logged = True
+            else:
+                taxi.high_wind_alert_logged = False
+                
+            # Storm/heavy rain rule: mark route as unsafe, trigger emergency landing
+            if cond in ["Thunderstorm", "Rainy"]:
+                taxi.status = 'Critical'
+                if not getattr(taxi, 'storm_alert_logged', False):
+                    log_event("WEATHER", f"CRITICAL: {taxi.id} route flagged UNSAFE due to {cond.upper()}. Commencing immediate emergency diversion landing.")
+                    # Force diversion to nearest skyport
+                    closest_port = None
+                    min_dist = 999999.0
+                    for port in skyports:
+                        dx = port["x"] - taxi.x
+                        dy = port["y"] - taxi.y
+                        dist = math.sqrt(dx**2 + dy**2)
+                        if dist < min_dist:
+                            min_dist = dist
+                            closest_port = port
+                    if closest_port:
+                        taxi.pickup = "DIV_STORM"
+                        taxi.drop = closest_port["name"]
+                        taxi.target_x = closest_port["x"]
+                        taxi.target_y = closest_port["y"]
+                        taxi.target_altitude = 480
+                        taxi.is_emergency_landing = True
+                    taxi.storm_alert_logged = True
+            else:
+                taxi.storm_alert_logged = False
 
         # 2c. Camera sensor dynamic evasive detouring
         all_hazards = [{"id": f"BIRD-{idx}", "x": b["x"], "y": b["y"], "speed": b["speed"], "size": 2.0} for idx, b in enumerate(birds)] + unregistered_obstacles

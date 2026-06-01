@@ -4,36 +4,74 @@
 
 @layer base {
   body {
-    @apply bg-[#050505] text-white font-sans;
+    @apply bg-[#030305] text-zinc-300;
     margin: 0;
     min-height: 100vh;
+    font-family: 'Inter', sans-serif;
   }
 }
 
+.font-orbitron {
+  font-family: 'Orbitron', sans-serif;
+}
+
+.font-rajdhani {
+  font-family: 'Rajdhani', sans-serif;
+}
+
+.font-share-tech {
+  font-family: 'Share Tech Mono', monospace;
+}
+
 .glass-morphism {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(6, 6, 12, 0.8);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.cyber-glow {
-  box-shadow: 0 0 20px rgba(0, 242, 255, 0.2);
+.glass-morphism-cyan {
+  background: rgba(0, 255, 204, 0.02);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 255, 204, 0.15);
 }
 
+.glass-morphism-red {
+  background: rgba(239, 68, 68, 0.02);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.cyber-glow-cyan {
+  box-shadow: 0 0 15px rgba(0, 255, 204, 0.15);
+}
+
+.cyber-glow-red {
+  box-shadow: 0 0 15px rgba(239, 68, 68, 0.2);
+}
+
+.cyber-glow-orange {
+  box-shadow: 0 0 15px rgba(249, 115, 22, 0.15);
+}
+
+/* Custom scrollbars */
 ::-webkit-scrollbar {
-  width: 5px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #050505;
+  background: #030305;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #222;
-  border-radius: 10px;
+  background: #141420;
+  border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #333;
+  background: #00ffcc;
 }
+

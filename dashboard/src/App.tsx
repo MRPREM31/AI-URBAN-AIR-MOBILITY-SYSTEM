@@ -28,14 +28,27 @@ interface Taxi {
   risk: number;
   battery: number;
   lastSeen: string;
+  place_name?: string;
+  nearest_skyport?: string;
+  weather_condition?: string;
+  wind_speed?: number;
+  temperature?: number;
+  visibility?: number;
 }
 
 interface Airspace {
-  skyports: Array<{ name: string; x: number; y: number }>;
+  skyports: Array<{ name: string; x: number; y: number; latitude?: number; longitude?: number }>;
   buildings: Array<{ x: number; y: number; w: number; h: number }>;
   no_fly_zones: Array<{ name: string; x: number; y: number; radius: number }>;
   weather_cells: Array<{ name: string; x: number; y: number; radius: number }>;
-  congested_zones: Array<{ x: number; y: number; radius: number; density: number }>;
+  congested_zones: Array<{ x: number; y: number; radius: number; density: number; latitude?: number; longitude?: number }>;
+  weather?: {
+    temperature: number;
+    wind_speed: number;
+    weather_condition: string;
+    visibility: number;
+    is_safe: boolean;
+  };
 }
 
 const getAltitudeColor = (alt: number) => {
@@ -203,11 +216,246 @@ function AirTaxiCameraFeed({ taxiId, cameraTelemetry }: CameraFeedProps) {
   );
 }
 
+const latMin = 12.8500;
+const latMax = 13.1500;
+const lonMin = 77.4000;
+const lonMax = 77.8500;
+
+const toX = (lon: number) => ((lon - lonMin) / (lonMax - lonMin)) * 1100;
+const toY = (lat: number) => ((lat - latMin) / (latMax - latMin)) * 900;
+
+interface LeafletMapProps {
+  taxis: any[];
+  airspace: any;
+  selectedTaxiId: string | null;
+  setSelectedTaxiId: (id: string | null) => void;
+}
+
+function LeafletMap({ taxis, airspace, selectedTaxiId, setSelectedTaxiId }: LeafletMapProps) {
+  const mapRef = React.useRef<HTMLDivElement>(null);
+  const leafletMapInst = React.useRef<any>(null);
+  const markersRef = React.useRef<Record<string, any>>({});
+  const skyportMarkersRef = React.useRef<any[]>([]);
+  const pathsRef = React.useRef<Record<string, any>>({});
+  const nfzRef = React.useRef<any[]>([]);
+  const congestedRef = React.useRef<any[]>([]);
+
+  // Robust async safety: poll for window.L loading
+  const [lAvailable, setLAvailable] = React.useState(!!(window as any).L);
+
+  React.useEffect(() => {
+    if ((window as any).L) {
+      setLAvailable(true);
+      return;
+    }
+    const interval = setInterval(() => {
+      if ((window as any).L) {
+        setLAvailable(true);
+        clearInterval(interval);
+      }
+    }, 100);
+    return () => clearInterval(interval);
+  }, []);
+
+  React.useEffect(() => {
+    if (!mapRef.current || leafletMapInst.current || !lAvailable) return;
+
+    const L = (window as any).L;
+    const map = L.map(mapRef.current, {
+      zoomControl: true,
+      attributionControl: false
+    }).setView([12.9716, 77.5946], 12);
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 18
+    }).addTo(map);
+
+    leafletMapInst.current = map;
+
+    return () => {
+      if (leafletMapInst.current) {
+        leafletMapInst.current.remove();
+        leafletMapInst.current = null;
+      }
+    };
+  }, [lAvailable]);
+
+  React.useEffect(() => {
+    const map = leafletMapInst.current;
+    if (!map || !(window as any).L) return;
+    const L = (window as any).L;
+
+    // A. Render Skyports
+    if (airspace && skyportMarkersRef.current.length === 0) {
+      airspace.skyports.forEach((port: any) => {
+        if (port.latitude && port.longitude) {
+          const marker = L.circleMarker([port.latitude, port.longitude], {
+            radius: 8,
+            fillColor: '#00ff78',
+            color: '#fff',
+            weight: 2,
+            opacity: 0.9,
+            fillOpacity: 0.9
+          }).addTo(map)
+            .bindTooltip(port.name, { permanent: true, className: 'skyport-tooltip', direction: 'top', offset: [0, -10] });
+          skyportMarkersRef.current.push(marker);
+        }
+      });
+    }
+
+    // B. Render No-Fly Zones
+    if (airspace && nfzRef.current.length === 0) {
+      airspace.no_fly_zones.forEach((nfz: any) => {
+        const lat = 12.8500 + (nfz.y / 900.0) * (13.1500 - 12.8500);
+        const lon = 77.4000 + (nfz.x / 1100.0) * (77.8500 - 77.4000);
+        const circle = L.circle([lat, lon], {
+          radius: nfz.radius * 7.5,
+          color: '#ef4444',
+          fillColor: '#ef4444',
+          fillOpacity: 0.15,
+          weight: 1.5,
+          dashArray: '5, 5'
+        }).addTo(map);
+        nfzRef.current.push(circle);
+      });
+    }
+
+    // C. Render / Update Congested Zones
+    congestedRef.current.forEach(c => map.removeLayer(c));
+    congestedRef.current = [];
+    if (airspace?.congested_zones) {
+      airspace.congested_zones.forEach((cz: any) => {
+        if (cz.latitude && cz.longitude) {
+          const circle = L.circle([cz.latitude, cz.longitude], {
+            radius: cz.radius * 7.5,
+            color: '#f97316',
+            fillColor: '#ef4444',
+            fillOpacity: 0.25,
+            weight: 2
+          }).addTo(map)
+            .bindTooltip(`CONGESTED ZONE (DENSITY: ${cz.density})`, { permanent: true, className: 'congested-tooltip' });
+          congestedRef.current.push(circle);
+        }
+      });
+    }
+
+    // D. Render UAM Taxis & Flight paths
+    taxis.forEach((taxi: any) => {
+      const isSelected = selectedTaxiId === taxi.id;
+      const taxiColor = taxi.status === 'Critical' ? '#ef4444' : taxi.status === 'Detouring' ? '#f97316' : '#00f6ff';
+
+      if (markersRef.current[taxi.id]) {
+        markersRef.current[taxi.id].setLatLng([taxi.latitude, taxi.longitude]);
+        markersRef.current[taxi.id].setStyle({ fillColor: taxiColor });
+      } else {
+        const marker = L.circleMarker([taxi.latitude, taxi.longitude], {
+          radius: 9,
+          fillColor: taxiColor,
+          color: '#fff',
+          weight: 2.5,
+          opacity: 1,
+          fillOpacity: 0.95
+        }).addTo(map);
+        
+        marker.on('click', () => setSelectedTaxiId(taxi.id));
+        marker.bindTooltip(`${taxi.id}`, { permanent: false, className: 'taxi-tooltip' });
+        markersRef.current[taxi.id] = marker;
+      }
+
+      if (markersRef.current[taxi.id]) {
+        if (isSelected) {
+          markersRef.current[taxi.id].setStyle({ weight: 4.5, color: '#00ffcc', radius: 11 });
+          map.panTo([taxi.latitude, taxi.longitude]);
+        } else {
+          markersRef.current[taxi.id].setStyle({ weight: 2.5, color: '#fff', radius: 9 });
+        }
+      }
+
+      const destName = taxi.route.split(" -> ")[1];
+      const destPort = airspace?.skyports.find((p: any) => p.name === destName);
+      if (destPort && destPort.latitude && destPort.longitude) {
+        const points: [number, number][] = [
+          [taxi.latitude, taxi.longitude],
+          [destPort.latitude, destPort.longitude]
+        ];
+
+        if (pathsRef.current[taxi.id]) {
+          pathsRef.current[taxi.id].setLatLngs(points);
+          pathsRef.current[taxi.id].setStyle({ color: taxiColor });
+        } else {
+          const polyline = L.polyline(points, {
+            color: taxiColor,
+            weight: isSelected ? 3.5 : 1.5,
+            dashArray: '6, 6',
+            opacity: isSelected ? 0.9 : 0.4
+          }).addTo(map);
+          pathsRef.current[taxi.id] = polyline;
+        }
+
+        if (pathsRef.current[taxi.id]) {
+          pathsRef.current[taxi.id].setStyle({
+            weight: isSelected ? 3.5 : 1.5,
+            opacity: isSelected ? 0.9 : 0.4
+          });
+        }
+      }
+    });
+
+    const activeIds = new Set(taxis.map((t: any) => t.id));
+    Object.keys(markersRef.current).forEach((id) => {
+      if (!activeIds.has(id)) {
+        map.removeLayer(markersRef.current[id]);
+        delete markersRef.current[id];
+        if (pathsRef.current[id]) {
+          map.removeLayer(pathsRef.current[id]);
+          delete pathsRef.current[id];
+        }
+      }
+    });
+
+  }, [taxis, airspace, selectedTaxiId]);
+
+  return (
+    <div ref={mapRef} className="w-full h-full relative" style={{ height: '100%', minHeight: '100%', background: '#020202' }}>
+      <style>{`
+        .leaflet-tooltip.skyport-tooltip {
+          background: #020202;
+          color: #fff;
+          border: 1px solid #00ff78;
+          font-family: monospace;
+          font-size: 8px;
+          font-weight: bold;
+          padding: 2px 5px;
+          opacity: 0.9;
+        }
+        .leaflet-tooltip.congested-tooltip {
+          background: #110300;
+          color: #ef4444;
+          border: 1px solid #f97316;
+          font-family: monospace;
+          font-size: 8px;
+          font-weight: bold;
+          padding: 2px 5px;
+        }
+        .leaflet-tooltip.taxi-tooltip {
+          background: #050505;
+          color: #00f6ff;
+          border: 1px solid #333;
+          font-family: monospace;
+          font-size: 9px;
+          font-weight: bold;
+          padding: 2px 4px;
+        }
+      `}</style>
+    </div>
+  );
+}
+
 export default function UrbanAirTaxiDashboard() {
   const [taxis, setTaxis] = useState<Taxi[]>([]);
   const [airspace, setAirspace] = useState<Airspace | null>(null);
   const [history, setHistory] = useState<any[]>([]);
-  const [viewMode, setViewMode] = useState<'2D' | '3D'>('2D');
+  const [viewMode, setViewMode] = useState<'MAP_2D' | 'RADAR' | '3D'>('MAP_2D');
   const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString());
   const [events, setEvents] = useState<any[]>([]);
   const [slowDown, setSlowDown] = useState(false);
@@ -233,6 +481,43 @@ export default function UrbanAirTaxiDashboard() {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
   }, [events]);
+
+  const [simulationRunning, setSimulationRunning] = useState(false);
+
+  useEffect(() => {
+    const checkStatus = async () => {
+      try {
+        const res = await fetch("http://127.0.0.1:8000/simulation/status");
+        const data = await res.json();
+        if (data && data.status) {
+          setSimulationRunning(data.status === "active");
+        }
+      } catch (e) {}
+    };
+    checkStatus();
+    const interval = setInterval(checkStatus, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const startSimulationEngine = async () => {
+    try {
+      const res = await fetch("http://127.0.0.1:8000/simulation/start", { method: "POST" });
+      const data = await res.json();
+      if (data && (data.status === "success" || data.status === "active")) {
+        setSimulationRunning(true);
+      }
+    } catch (e) {}
+  };
+
+  const stopSimulationEngine = async () => {
+    try {
+      const res = await fetch("http://127.0.0.1:8000/simulation/stop", { method: "POST" });
+      const data = await res.json();
+      if (data && (data.status === "success" || data.status === "inactive")) {
+        setSimulationRunning(false);
+      }
+    } catch (e) {}
+  };
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -292,8 +577,8 @@ export default function UrbanAirTaxiDashboard() {
           setTrailBuffer(prev => {
             const next = { ...prev };
             data.forEach((taxi: Taxi) => {
-              const tx = (taxi.longitude - 78.0) * 1100;
-              const ty = (taxi.latitude - 17.0) * 900;
+              const tx = toX(taxi.longitude);
+              const ty = toY(taxi.latitude);
               const trail = next[taxi.id] || [];
               const last = trail[trail.length - 1];
               if (!last || Math.abs(last[0] - tx) > 1 || Math.abs(last[1] - ty) > 1) {
@@ -369,70 +654,95 @@ export default function UrbanAirTaxiDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-[#020202] text-zinc-300 p-2 md:p-6 font-mono selection:bg-[#00ffcc]/30">
+    <div className="min-h-screen bg-[#030306] text-zinc-300 p-2 md:p-6 font-sans selection:bg-[#00ffcc]/30 relative overflow-hidden">
+      {/* High-tech ambient glowing grid background */}
+      <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.4)_50%),linear-gradient(90deg,rgba(0,255,204,0.02),rgba(0,0,0,0),rgba(239,68,68,0.01))] bg-[size:100%_4px,3px_100%] pointer-events-none z-0" />
+      <div className="absolute -top-[400px] -left-[400px] w-[800px] h-[800px] rounded-full bg-[#00ffcc]/3 blur-[180px] pointer-events-none z-0" />
+      <div className="absolute -bottom-[400px] -right-[400px] w-[800px] h-[800px] rounded-full bg-[#ef4444]/2 blur-[180px] pointer-events-none z-0" />
+
       {/* ATC TOP BAR */}
-      <div className="max-w-[1600px] mx-auto mb-4 flex flex-col md:flex-row items-center justify-between gap-4 border-b border-zinc-800 pb-4">
+      <div className="max-w-[1600px] mx-auto mb-6 flex flex-col lg:flex-row items-center justify-between gap-4 border-b border-zinc-800 pb-4 relative z-10 font-orbitron">
         <div className="flex items-center gap-4">
-          <div className="p-2 bg-[#00ffcc]/10 border border-[#00ffcc]/30">
-            <Terminal className="w-5 h-5 text-[#00ffcc]" />
+          <div className="p-2.5 bg-[#00ffcc]/5 border border-[#00ffcc]/20 rounded-none shadow-[0_0_15px_rgba(0,255,204,0.05)]">
+            <Terminal className="w-5 h-5 text-[#00ffcc] animate-pulse" />
           </div>
           <div>
-            <h1 className="text-lg font-black tracking-[0.3em] uppercase text-white">
-              URBAN_AIR_MOBILITY_SYSTEM // ATC_NODE_V3
+            <h1 className="text-xl font-black tracking-[0.25em] text-white font-orbitron bg-clip-text bg-gradient-to-r from-white via-zinc-200 to-zinc-400">
+              AERONET AI <span className="text-[#00ffcc]">//</span> UAM MONITORING
             </h1>
-            <div className="flex items-center gap-3 text-[10px] font-bold text-zinc-500 mt-0.5">
-              <span className="flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-ping" /> UAM_LINK_ACTIVE</span>
-              <span className="flex items-center gap-1.5"><Wifi className="w-3 h-3 text-[#00ffcc]" /> SECURE_DATA_FEED</span>
+            <div className="flex items-center gap-3 text-[9px] font-bold text-zinc-500 mt-1.5 font-share-tech tracking-wider">
+              <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-ping" /> TELEMETRY_ACTIVE</span>
+              <span className="flex items-center gap-1.5 text-[#00ffcc]"><Wifi className="w-3 h-3 animate-pulse" /> SECURE_DATA_LINK</span>
             </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-6">
+        <div className="flex flex-wrap items-center justify-center lg:justify-end gap-4 font-rajdhani text-sm">
           <button
             onClick={toggleSpeedRestriction}
-            className={`px-4 py-1.5 text-[10px] font-black tracking-widest transition-all border flex items-center gap-1.5 rounded-none ${
+            className={`px-4 py-1.5 text-[11px] font-black tracking-widest transition-all border flex items-center gap-2 rounded-none font-orbitron ${
               slowDown 
-                ? 'bg-yellow-500 border-yellow-500 text-black hover:bg-yellow-600 animate-pulse' 
-                : 'border-zinc-800 text-zinc-400 hover:text-yellow-500 hover:border-yellow-500/50 bg-black'
+                ? 'bg-yellow-500 border-yellow-500 text-black hover:bg-yellow-600 shadow-[0_0_15px_rgba(234,179,8,0.2)] animate-pulse' 
+                : 'border-zinc-850 text-zinc-400 hover:text-yellow-500 hover:border-yellow-500/30 bg-black/60 backdrop-blur-md'
             }`}
           >
-            <Wind className={`w-3.5 h-3.5 ${slowDown ? 'animate-spin' : ''}`} />
-            {slowDown ? 'RESTORE VELOCITY' : 'SLOW AIR MOBILITY'}
+            <Wind className={`w-3.5 h-3.5 ${slowDown ? 'animate-spin' : ''}`} style={{ animationDuration: '4s' }} />
+            {slowDown ? 'LIFT SPEED RESTRICTION' : 'ISSUE SPEED RESTRICTION'}
           </button>
 
-          <div className="flex bg-black border border-zinc-800 p-0.5">
-            {['2D', '3D'].map((mode) => (
+          <button
+            onClick={simulationRunning ? stopSimulationEngine : startSimulationEngine}
+            className={`px-4 py-1.5 text-[11px] font-black tracking-widest transition-all border flex items-center gap-2 rounded-none font-orbitron ${
+              simulationRunning 
+                ? 'bg-red-500 border-red-500 text-black hover:bg-red-600 shadow-[0_0_15px_rgba(239,68,68,0.2)] font-black' 
+                : 'bg-green-500 border-green-500 text-black hover:bg-green-600 shadow-[0_0_15px_rgba(34,197,94,0.25)] font-black'
+            }`}
+          >
+            <span className={`w-2 h-2 rounded-full ${simulationRunning ? 'bg-black animate-ping' : 'bg-black'}`} />
+            {simulationRunning ? 'STOP SIMULATION' : 'START SIMULATION'}
+          </button>
+
+          <div className="flex bg-black/60 backdrop-blur-md border border-zinc-800 p-0.5 rounded-none font-orbitron">
+            {['MAP_2D', 'RADAR', '3D'].map((mode) => (
               <button 
                 key={mode}
                 onClick={() => setViewMode(mode as any)}
-                className={`px-6 py-1.5 text-[10px] font-black tracking-widest transition-all ${viewMode === mode ? 'bg-[#00ffcc] text-black' : 'text-zinc-600 hover:text-zinc-300'}`}
+                className={`px-4 py-1.5 text-[9px] font-black tracking-widest transition-all rounded-none ${
+                  viewMode === mode 
+                    ? 'bg-[#00ffcc] text-black shadow-[0_0_15px_rgba(0,255,204,0.2)] font-black' 
+                    : 'text-zinc-600 hover:text-zinc-300'
+                }`}
               >
-                {mode}_RADAR
+                {mode === 'MAP_2D' ? 'OSM MAP' : mode === 'RADAR' ? '2D RADAR' : '3D AIRSPACE'}
               </button>
             ))}
           </div>
-          <div className="text-right border-l border-zinc-800 pl-6">
-            <div className="text-zinc-600 text-[9px] uppercase tracking-widest font-black mb-1">System Time</div>
-            <div className="text-xl font-bold text-white tracking-widest leading-none">{currentTime}</div>
+          <div className="text-right border-l border-zinc-850 pl-5 font-orbitron">
+            <div className="text-zinc-600 text-[8px] uppercase tracking-widest font-black mb-1">SYSTEM CLOCK</div>
+            <div className="text-lg font-bold text-white tracking-widest leading-none font-share-tech">{currentTime}</div>
           </div>
         </div>
       </div>
 
-      <div className="max-w-[1600px] mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4">
+      <div className="max-w-[1600px] mx-auto grid grid-cols-1 lg:grid-cols-12 gap-5 relative z-10">
         {/* CENTER - SPATIAL DATA */}
-        <div className="lg:col-span-9 space-y-4">
+        <div className="lg:col-span-9 space-y-5">
           
           {/* PLAYBACK CONTROL HUB */}
-          <div className="bg-black/90 border border-zinc-900 p-3 flex flex-col gap-2 rounded-sm shadow-md">
-            <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="bg-[#06060c]/85 border border-[#00ffcc]/15 p-3 flex flex-col gap-2 rounded-none shadow-md backdrop-blur-md relative font-orbitron">
+            <div className="absolute top-0 left-0 w-2 h-2 border-t border-l border-[#00ffcc]" />
+            <div className="absolute top-0 right-0 w-2 h-2 border-t border-r border-[#00ffcc]" />
+            <div className="absolute bottom-0 left-0 w-2 h-2 border-b border-l border-[#00ffcc]" />
+            <div className="absolute bottom-0 right-0 w-2 h-2 border-b border-r border-[#00ffcc]" />
+            <div className="flex flex-wrap items-center justify-between gap-4 font-rajdhani text-sm">
               <div className="flex items-center gap-2">
                 <span className={`w-2.5 h-2.5 rounded-full ${playbackActive ? 'bg-orange-500 animate-pulse' : 'bg-green-500 animate-ping'}`} />
-                <span className="text-[10px] font-black uppercase tracking-wider text-zinc-400">
+                <span className="text-[10px] font-orbitron font-black uppercase tracking-wider text-zinc-400">
                   {playbackActive ? `PLAYBACK ACTIVE // TIMELINE STEP: ${playbackIndex + 1} / ${playbackBuffer.length}` : 'LIVE REAL-TIME STREAMING'}
                 </span>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 font-orbitron">
                 {/* Live / Pause Toggle */}
                 <button 
                   onClick={() => {
@@ -447,18 +757,18 @@ export default function UrbanAirTaxiDashboard() {
                   }}
                   className={`px-3 py-1 text-[9px] font-black tracking-widest border transition-all ${
                     playbackActive 
-                      ? 'bg-orange-500 text-black border-orange-500 hover:bg-orange-600' 
-                      : 'bg-black text-[#00ffcc] border-[#00ffcc]/30 hover:border-[#00ffcc]/60'
+                      ? 'bg-orange-500 text-black border-orange-500 hover:bg-orange-600 shadow-[0_0_10px_rgba(249,115,22,0.15)]' 
+                      : 'bg-black/60 text-[#00ffcc] border-[#00ffcc]/30 hover:border-[#00ffcc]/60 hover:text-white'
                   }`}
                 >
-                  {playbackActive ? 'GO LIVE STREAM' : 'PAUSE / REPLAY FLIGHT'}
+                  {playbackActive ? 'GO LIVE STREAM' : 'PAUSE / REPLAY'}
                 </button>
 
                 {/* Step back */}
                 <button
                   disabled={!playbackActive || playbackIndex === 0}
                   onClick={() => setPlaybackIndex(prev => Math.max(0, prev - 1))}
-                  className="px-2 py-1 text-[9px] font-black bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                  className="px-2.5 py-1 text-[8px] font-black bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-zinc-300 disabled:opacity-20 disabled:cursor-not-allowed"
                 >
                   ◀ STEP BACK
                 </button>
@@ -467,7 +777,7 @@ export default function UrbanAirTaxiDashboard() {
                 <button
                   disabled={!playbackActive || playbackIndex >= playbackBuffer.length - 1}
                   onClick={() => setPlaybackIndex(prev => Math.min(playbackBuffer.length - 1, prev + 1))}
-                  className="px-2 py-1 text-[9px] font-black bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                  className="px-2.5 py-1 text-[8px] font-black bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-zinc-300 disabled:opacity-20 disabled:cursor-not-allowed"
                 >
                   STEP FWD ▶
                 </button>
@@ -488,23 +798,27 @@ export default function UrbanAirTaxiDashboard() {
 
             {/* Timeline Slider */}
             {playbackActive && playbackBuffer.length > 0 && (
-              <div className="flex items-center gap-3 border-t border-zinc-900 pt-2 w-full">
-                <span className="text-[8px] text-zinc-600 font-mono">00:00</span>
+              <div className="flex items-center gap-3 border-t border-zinc-900 pt-2 w-full font-share-tech">
+                <span className="text-[8px] text-zinc-600">00:00</span>
                 <input 
                   type="range"
                   min="0"
                   max={playbackBuffer.length - 1}
                   value={playbackIndex}
                   onChange={(e) => setPlaybackIndex(parseInt(e.target.value))}
-                  className="flex-1 accent-[#00ffcc] h-1 bg-zinc-800 cursor-pointer rounded-none"
+                  className="flex-1 accent-[#00ffcc] h-1 bg-zinc-900 cursor-pointer rounded-none"
                 />
-                <span className="text-[8px] text-zinc-400 font-mono">T-{playbackBuffer.length - 1 - playbackIndex} SECS</span>
+                <span className="text-[8px] text-[#00ffcc]">T-{playbackBuffer.length - 1 - playbackIndex} SECS AGO</span>
               </div>
             )}
           </div>
 
-          <div className="relative aspect-[21/9] border border-zinc-800 bg-[#030305] overflow-hidden">
-            {viewMode === '3D' ? <Airspace3D taxis={taxis} airspace={airspace} selectedTaxiId={selectedTaxiId} /> : (
+          <div className="relative h-[500px] border border-zinc-800 bg-[#030305] overflow-hidden">
+            {viewMode === '3D' ? (
+              <Airspace3D taxis={taxis} airspace={airspace} selectedTaxiId={selectedTaxiId} />
+            ) : viewMode === 'MAP_2D' ? (
+              <LeafletMap taxis={taxis} airspace={airspace} selectedTaxiId={selectedTaxiId} setSelectedTaxiId={setSelectedTaxiId} />
+            ) : (
               <div className="relative w-full h-full">
                 {/* SVG High-Tech Radar Overlay with smooth viewBox slide transitions */}
                 <svg 
@@ -512,8 +826,8 @@ export default function UrbanAirTaxiDashboard() {
                     if (autofocusMode && selectedTaxiId) {
                       const act = taxis.find(t => t.id === selectedTaxiId);
                       if (act) {
-                        const tx = (act.longitude - 78.0) * 1100;
-                        const ty = (act.latitude - 17.0) * 900;
+                        const tx = toX(act.longitude);
+                        const ty = toY(act.latitude);
                         const zoomW = 380;
                         const zoomH = 290;
                         // Clamp center viewport safely inside maps grid bounds
@@ -633,8 +947,8 @@ export default function UrbanAirTaxiDashboard() {
                   {taxis.map((taxi) => {
                     const det = cameraTelemetry[taxi.id];
                     if (!det) return null;
-                    const tx = (taxi.longitude - 78.0) * 1100;
-                    const ty = (taxi.latitude - 17.0) * 900;
+                    const tx = toX(taxi.longitude);
+                    const ty = toY(taxi.latitude);
                     
                     return (
                       <g key={`det-line-${taxi.id}`}>
@@ -694,8 +1008,8 @@ export default function UrbanAirTaxiDashboard() {
 
                   {/* Taxi Nodes */}
                   {taxis.map((taxi) => {
-                    const x = (taxi.longitude - 78.0) * 1100;
-                    const y = (taxi.latitude - 17.0) * 900;
+                    const x = toX(taxi.longitude);
+                    const y = toY(taxi.latitude);
                     const color = getAltitudeColor(taxi.altitude);
                     const isCritical = taxi.status === 'Critical';
                     const isBypassing = taxi.status === 'Bypassing';
@@ -853,14 +1167,13 @@ export default function UrbanAirTaxiDashboard() {
                 )}
               </div>
             )}
-            
-            {/* HUD Overlays */}
-            <div className="absolute top-4 right-4 space-y-2 pointer-events-none">
-              <div className="bg-black/90 border border-zinc-800 p-3 flex items-center gap-3">
+                     {/* HUD Overlays */}
+            <div className="absolute top-4 right-4 space-y-2 pointer-events-none font-orbitron">
+              <div className="bg-black/80 backdrop-blur-md border border-[#00ffcc]/30 px-3 py-1.5 flex items-center gap-3">
                 <Heartbeat className="w-4 h-4 text-orange-500 animate-pulse" />
-                <div className="text-[10px] font-bold">
-                  <div className="text-zinc-500 uppercase">Sync_Rate</div>
-                  <div className="text-white">1000ms / 60fps</div>
+                <div className="text-[9px] font-bold">
+                  <div className="text-zinc-500 uppercase tracking-widest">SYNC RATE</div>
+                  <div className="text-white font-share-tech">60 FPS // LIVE</div>
                 </div>
               </div>
             </div>
@@ -869,48 +1182,58 @@ export default function UrbanAirTaxiDashboard() {
           <Analytics history={history} />
 
           {/* SYSTEM LOGS */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="bg-[#0a0a0a] border border-zinc-800 p-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5 font-share-tech">
+            <div className="bg-[#06060c]/85 border border-[#ffd700]/15 p-4 rounded-none backdrop-blur-md relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-2 h-2 border-t border-l border-[#ffd700]" />
+              <div className="absolute top-0 right-0 w-2 h-2 border-t border-r border-[#ffd700]" />
+              <div className="absolute bottom-0 left-0 w-2 h-2 border-b border-l border-[#ffd700]" />
+              <div className="absolute bottom-0 right-0 w-2 h-2 border-b border-r border-[#ffd700]" />
               <div className="flex items-center gap-2 mb-3">
-                <AlertTriangle className="w-4 h-4 text-yellow-500" />
-                <span className="text-[10px] font-black uppercase text-zinc-400">Environment_Status</span>
+                <AlertTriangle className="w-4 h-4 text-[#ffd700]" />
+                <span className="text-[10px] font-orbitron font-black uppercase text-zinc-400">Environment_Status</span>
               </div>
-              <div className="space-y-2">
-                <div className="flex justify-between text-[10px]"><span className="text-zinc-500">WIND_VEC</span><span className="text-white">14.6 KT @ 245°</span></div>
-                <div className="flex justify-between text-[10px]"><span className="text-zinc-500">VISIBILITY</span><span className="text-white">9.8 KM (OPTIMAL)</span></div>
-                <div className="flex justify-between text-[10px]"><span className="text-zinc-500">STORM_CELL_A</span><span className="text-blue-400 font-bold animate-pulse">ACTIVE // DRIFTING</span></div>
+              <div className="space-y-2.5">
+                <div className="flex justify-between text-[10px]"><span className="text-zinc-500">WIND_SPEED</span><span className="text-white font-bold">{airspace?.weather?.wind_speed ? `${airspace.weather.wind_speed.toFixed(1)} km/h` : "12.5 km/h"}</span></div>
+                <div className="flex justify-between text-[10px]"><span className="text-zinc-500">TEMPERATURE</span><span className="text-white font-bold">{airspace?.weather?.temperature ? `${airspace.weather.temperature.toFixed(1)}°C` : "25.0°C"}</span></div>
+                <div className="flex justify-between text-[10px]"><span className="text-zinc-500">CONDITION</span><span className="text-sky-400 font-black uppercase tracking-wider">{airspace?.weather?.weather_condition || "CLEAR"}</span></div>
+                <div className="flex justify-between text-[10px]"><span className="text-zinc-500">VISIBILITY</span><span className="text-white font-bold">{airspace?.weather?.visibility ? `${(airspace.weather.visibility / 1000).toFixed(1)} km` : "10.0 km"}</span></div>
               </div>
             </div>
-            <div className="md:col-span-2 bg-[#0a0a0a] border border-zinc-800 p-4">
+            
+            <div className="md:col-span-2 bg-[#06060c]/85 border border-[#00ffcc]/15 p-4 rounded-none backdrop-blur-md relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-2 h-2 border-t border-l border-[#00ffcc]" />
+              <div className="absolute top-0 right-0 w-2 h-2 border-t border-r border-[#00ffcc]" />
+              <div className="absolute bottom-0 left-0 w-2 h-2 border-b border-l border-[#00ffcc]" />
+              <div className="absolute bottom-0 right-0 w-2 h-2 border-b border-r border-[#00ffcc]" />
               <div className="flex items-center gap-2 mb-3">
                 <Layers className="w-4 h-4 text-[#00ffcc]" />
-                <span className="text-[10px] font-black uppercase text-zinc-400">AI_Decision_Log</span>
+                <span className="text-[10px] font-orbitron font-black uppercase text-zinc-400">AI_Decision_Log</span>
               </div>
               <div ref={logContainerRef} className="text-[10px] font-mono space-y-2 h-[120px] overflow-y-auto pr-1 custom-scrollbar">
                 {events.map((event, idx) => {
                   let colorClass = "text-zinc-400";
                   if (event.event_type === "COLLISION") {
-                    colorClass = "text-red-500 font-bold animate-pulse";
+                    colorClass = "text-red-400 font-bold animate-pulse";
                   } else if (event.event_type === "BUILDING") {
-                    colorClass = "text-purple-500 font-bold";
+                    colorClass = "text-purple-400 font-bold";
                   } else if (event.event_type === "WEATHER") {
-                    colorClass = "text-sky-400 font-bold";
+                    colorClass = "text-sky-450 font-bold";
                   } else if (event.event_type === "AIRSPACE") {
-                    colorClass = "text-yellow-500 font-bold";
+                    colorClass = "text-yellow-400 font-bold";
                   } else if (event.event_type === "ROUTE") {
-                    colorClass = "text-[#00ffcc]";
+                    colorClass = "text-[#00ffcc] font-semibold";
                   }
                   
                   return (
-                    <div key={idx} className={`${colorClass} flex items-start gap-1`}>
-                      <span className="text-zinc-600">[{event.timestamp}]</span>
-                      <span className="font-semibold bg-zinc-900 px-1 py-0.5 rounded text-[8px] tracking-wider uppercase border border-zinc-800 text-zinc-500">{event.event_type}</span>
-                      <span>{event.message}</span>
+                    <div key={idx} className={`${colorClass} flex items-start gap-1.5`}>
+                      <span className="text-zinc-650 font-bold">[{event.timestamp}]</span>
+                      <span className="font-semibold bg-zinc-900/60 px-1 py-0.5 rounded-none text-[8px] tracking-widest uppercase border border-zinc-850 text-zinc-500">{event.event_type}</span>
+                      <span className="font-share-tech">{event.message}</span>
                     </div>
                   );
                 })}
                 {events.length === 0 && (
-                  <div className="text-zinc-600 text-[10px] italic">No active decisions logged. Syncing with flight simulation...</div>
+                  <div className="text-zinc-650 text-[10px] italic">No active decisions logged. Syncing with flight simulation...</div>
                 )}
               </div>
             </div>
@@ -946,8 +1269,8 @@ export default function UrbanAirTaxiDashboard() {
               const destPort = airspace?.skyports.find(p => p.name === dropName);
               let etaString = "ARRIVED";
               if (destPort) {
-                const cx = (activeTaxi.longitude - 78.0) * 1100;
-                const cy = (activeTaxi.latitude - 17.0) * 900;
+                const cx = toX(activeTaxi.longitude);
+                const cy = toY(activeTaxi.latitude);
                 const dist = Math.sqrt(Math.pow(destPort.x - cx, 2) + Math.pow(destPort.y - cy, 2));
                 const etaSeconds = (dist / Math.max(0.5, activeTaxi.speed * 12));
                 if (etaSeconds > 1) {
@@ -969,20 +1292,25 @@ export default function UrbanAirTaxiDashboard() {
                   initial={{ opacity: 0, y: 15 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -15 }}
-                  className="bg-black border border-[#00ffcc]/30 p-4 relative shadow-[0_0_15px_rgba(0,255,204,0.05)]"
+                  className="bg-[#080812]/95 border border-[#00ffcc]/30 p-4 relative shadow-[0_0_20px_rgba(0,255,204,0.08)] rounded-none backdrop-blur-md font-share-tech"
                 >
+                  <div className="absolute top-0 left-0 w-3.5 h-3.5 border-t-2 border-l-2 border-[#00ffcc]" />
+                  <div className="absolute top-0 right-0 w-3.5 h-3.5 border-t-2 border-r-2 border-[#00ffcc]" />
+                  <div className="absolute bottom-0 left-0 w-3.5 h-3.5 border-b-2 border-l-2 border-[#00ffcc]" />
+                  <div className="absolute bottom-0 right-0 w-3.5 h-3.5 border-b-2 border-r-2 border-[#00ffcc]" />
+
                   {/* Glowing header target reticle */}
-                  <div className="absolute top-2 right-2 flex items-center gap-1.5">
+                  <div className="absolute top-3 right-3 flex items-center gap-1.5 font-orbitron">
                     <span className="w-1.5 h-1.5 rounded-full bg-[#00ffcc] animate-ping" />
                     <button 
                       onClick={() => setSelectedTaxiId(null)}
-                      className="text-[8px] font-black uppercase text-[#00ffcc] hover:text-red-400 border border-[#00ffcc]/20 hover:border-red-400/30 px-1 py-0.5"
+                      className="text-[8px] font-black uppercase text-[#00ffcc] hover:text-red-400 border border-[#00ffcc]/20 hover:border-red-400/30 px-2 py-0.5"
                     >
                       DISCONNECT
                     </button>
                   </div>
 
-                  <h3 className="text-[10px] font-black uppercase tracking-[0.2em] mb-4 text-[#00ffcc] flex items-center gap-2">
+                  <h3 className="text-[10px] font-orbitron font-black uppercase tracking-[0.2em] mb-4 text-[#00ffcc] flex items-center gap-2">
                     <Crosshair className="w-3.5 h-3.5 animate-spin text-[#00ffcc]" style={{ animationDuration: '4s' }} />
                     SURVEILLANCE_LINK
                   </h3>
@@ -992,51 +1320,71 @@ export default function UrbanAirTaxiDashboard() {
                     <div className="bg-red-950/40 border border-red-500/50 p-2.5 mb-3 text-red-400 text-[8px] font-bold tracking-wider animate-pulse flex items-start gap-2">
                       <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />
                       <div>
-                        <div className="font-black uppercase text-red-500">ABNORMAL FLIGHT STATUS</div>
-                        <div className="text-zinc-400 mt-0.5 text-[7px] leading-tight">{abnormalMessage}</div>
+                        <div className="font-black uppercase text-red-500 font-orbitron">ABNORMAL FLIGHT STATUS</div>
+                        <div className="text-zinc-400 mt-0.5 text-[7px] leading-tight font-share-tech">{abnormalMessage}</div>
                       </div>
                     </div>
                   )}
 
                   {/* Visual telemetry dials */}
-                  <div className="border border-zinc-900 p-3 mb-4 space-y-3 bg-[#020203]">
-                    <div className="flex justify-between items-center pb-2 border-b border-zinc-900">
+                  <div className="border border-zinc-900 p-3 mb-4 space-y-3 bg-[#020204]/80">
+                    <div className="flex justify-between items-center pb-2 border-b border-zinc-900 font-orbitron">
                       <span className="text-[12px] font-black text-white">{activeTaxi.id}</span>
-                      <span className="text-[8px] font-mono text-zinc-500">FLIGHT_DECK_{activeTaxi.altitude}M</span>
+                      <span className="text-[8px] text-zinc-500">FLIGHT_DECK_{activeTaxi.altitude}M</span>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4 text-[9px]">
+                    <div className="grid grid-cols-2 gap-4 text-[9px] font-share-tech">
                       <div>
-                        <span className="text-zinc-600 block uppercase">Altitude</span>
-                        <span className="text-xs font-bold text-white tracking-wider">{Math.round(activeTaxi.altitude)}M</span>
+                        <span className="text-zinc-655 block uppercase text-[7px] font-orbitron font-bold">Altitude</span>
+                        <span className="text-[11px] font-bold text-white tracking-wider font-orbitron">{Math.round(activeTaxi.altitude)}M</span>
                       </div>
                       <div>
-                        <span className="text-zinc-600 block uppercase">Speed</span>
-                        <span className="text-xs font-bold text-white tracking-wider">{Math.round(activeTaxi.speed * 100)} KMH</span>
+                        <span className="text-zinc-655 block uppercase text-[7px] font-orbitron font-bold">Speed</span>
+                        <span className="text-[11px] font-bold text-white tracking-wider font-orbitron">{Math.round(activeTaxi.speed * 100)} KMH</span>
                       </div>
                       <div>
-                        <span className="text-zinc-600 block uppercase">Latitude</span>
-                        <span className="text-zinc-400 font-mono">{activeTaxi.latitude.toFixed(5)}</span>
+                        <span className="text-zinc-655 block uppercase text-[7px] font-orbitron font-bold">Latitude</span>
+                        <span className="text-zinc-450 font-mono">{activeTaxi.latitude.toFixed(5)}</span>
                       </div>
                       <div>
-                        <span className="text-zinc-600 block uppercase">Longitude</span>
-                        <span className="text-zinc-400 font-mono">{activeTaxi.longitude.toFixed(5)}</span>
+                        <span className="text-zinc-655 block uppercase text-[7px] font-orbitron font-bold">Longitude</span>
+                        <span className="text-zinc-450 font-mono">{activeTaxi.longitude.toFixed(5)}</span>
+                      </div>
+                      <div className="col-span-2">
+                        <span className="text-zinc-655 block uppercase text-[7px] font-orbitron font-bold">Place Name</span>
+                        <span className="text-zinc-300 font-semibold block text-[8px] truncate">{activeTaxi.place_name || "Resolving Location..."}</span>
                       </div>
                       <div>
-                        <span className="text-zinc-600 block uppercase">Depart From</span>
+                        <span className="text-zinc-655 block uppercase text-[7px] font-orbitron font-bold">Nearest Skyport</span>
+                        <span className="text-zinc-300 font-semibold block text-[8px] truncate">{activeTaxi.nearest_skyport || "Resolving..."}</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-655 block uppercase text-[7px] font-orbitron font-bold">Flight Status</span>
+                        <span className="text-[#00ffcc] font-black block font-orbitron text-[8.5px]">{activeTaxi.status.toUpperCase()}</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-655 block uppercase text-[7px] font-orbitron font-bold">Weather</span>
+                        <span className="text-sky-400 font-semibold block truncate">{activeTaxi.weather_condition || "Clear"}</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-655 block uppercase text-[7px] font-orbitron font-bold">Wind Speed</span>
+                        <span className="text-zinc-300 font-semibold block">{activeTaxi.wind_speed ? `${activeTaxi.wind_speed.toFixed(1)} km/h` : "12.5 km/h"}</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-655 block uppercase text-[7px] font-orbitron font-bold">Depart From</span>
                         <span className="text-zinc-300 font-semibold block truncate">{pickupName}</span>
                       </div>
                       <div>
-                        <span className="text-zinc-600 block uppercase">Destination</span>
+                        <span className="text-zinc-655 block uppercase text-[7px] font-orbitron font-bold">Destination</span>
                         <span className="text-zinc-300 font-semibold block truncate">{dropName}</span>
                       </div>
                       <div>
-                        <span className="text-zinc-600 block uppercase">Corridor Deck</span>
+                        <span className="text-zinc-655 block uppercase text-[7px] font-orbitron font-bold">Corridor Deck</span>
                         <span className="text-zinc-300 font-semibold block text-[8px] truncate">{activeTaxi.altitude >= 600 ? "HIGHWAY_DECK_WEST" : "FLIGHT_LANE_EAST"}</span>
                       </div>
-                      <div>
-                        <span className="text-zinc-600 block uppercase">ETA (Skyport)</span>
-                        <span className="text-[#00ffcc] font-bold block">{etaString}</span>
+                      <div className="col-span-2 mt-1 pt-1.5 border-t border-zinc-900 flex justify-between items-center">
+                        <span className="text-zinc-655 uppercase text-[7px] font-orbitron font-bold">ETA (Skyport)</span>
+                        <span className="text-[#00ffcc] font-bold font-orbitron text-[10px]">{etaString}</span>
                       </div>
                     </div>
                   </div>
@@ -1046,12 +1394,12 @@ export default function UrbanAirTaxiDashboard() {
                     const cam = cameraTelemetry[activeTaxi.id];
                     if (!cam) return null;
                     return (
-                      <div className="border border-red-950/40 bg-red-950/5 p-2.5 mb-3 text-[9px] font-mono shadow-inner">
-                        <div className="text-red-400 font-black tracking-wider uppercase mb-1.5 flex items-center gap-1.5 animate-pulse">
+                      <div className="border border-red-950/40 bg-red-950/5 p-2.5 mb-3 text-[9px] font-mono shadow-inner relative">
+                        <div className="text-red-400 font-black tracking-wider uppercase mb-1.5 flex items-center gap-1.5 animate-pulse font-orbitron text-[8px]">
                           <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
                           Onboard Optical Target Lock
                         </div>
-                        <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-zinc-400 text-[8px]">
+                        <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-zinc-400 text-[8px] font-share-tech">
                           <div>
                             <span className="text-zinc-600 block uppercase">Target ID</span>
                             <span className="text-white font-bold">{cam.obstacle_id}</span>
@@ -1068,7 +1416,7 @@ export default function UrbanAirTaxiDashboard() {
                             <span className="text-zinc-600 block uppercase">Confidence</span>
                             <span className="text-red-400 font-bold">{cam.confidence}%</span>
                           </div>
-                          <div className="col-span-2 mt-1 pt-1 border-t border-red-950/20 text-[7px] leading-tight text-zinc-500">
+                          <div className="col-span-2 mt-1 pt-1 border-t border-red-950/20 text-[7px] leading-tight text-zinc-500 uppercase font-semibold">
                             {cam.description.toUpperCase()}
                           </div>
                         </div>
@@ -1076,32 +1424,32 @@ export default function UrbanAirTaxiDashboard() {
                     );
                   })()}
 
-                  <div className="space-y-2 text-[9px] mb-2">
+                  <div className="space-y-2 text-[9px] mb-2 font-orbitron">
                     <div className="flex justify-between">
-                      <span className="text-zinc-500 uppercase">AI Collision Index</span>
+                      <span className="text-zinc-500 uppercase text-[8px]">AI Collision Index</span>
                       <span className={`font-bold ${activeTaxi.risk > 70 ? 'text-red-500 animate-pulse' : 'text-[#00ffcc]'}`}>{activeTaxi.risk}%</span>
                     </div>
-                    <div className="h-1 bg-zinc-900 overflow-hidden">
+                    <div className="h-1 bg-zinc-950 overflow-hidden border border-zinc-900">
                       <div className="h-full transition-all duration-500" style={{ width: `${activeTaxi.risk}%`, backgroundColor: activeColor }} />
                     </div>
                   </div>
 
-                  <div className="space-y-2 text-[9px]">
+                  <div className="space-y-2 text-[9px] font-orbitron">
                     <div className="flex justify-between">
-                      <span className="text-zinc-500 uppercase">Battery Telemetry</span>
+                      <span className="text-zinc-500 uppercase text-[8px]">Battery Telemetry</span>
                       <span className={`font-bold ${activeTaxi.battery < 30 ? 'text-red-500 animate-pulse' : 'text-green-400'}`}>{Math.round(activeTaxi.battery)}%</span>
                     </div>
-                    <div className="h-1 bg-zinc-900 overflow-hidden">
+                    <div className="h-1 bg-zinc-950 overflow-hidden border border-zinc-900">
                       <div className={`h-full transition-all duration-500 ${activeTaxi.battery < 30 ? 'bg-red-500' : 'bg-green-500'}`} style={{ width: `${activeTaxi.battery}%` }} />
                     </div>
                   </div>
 
-                  <div className="mt-4 pt-3 border-t border-zinc-900 grid grid-cols-2 gap-2 text-[8px] font-black uppercase text-zinc-500">
+                  <div className="mt-4 pt-3 border-t border-zinc-900 grid grid-cols-2 gap-2 text-[8px] font-black uppercase text-zinc-500 font-orbitron">
                     <div>
                       STATUS: <span style={{ color: activeColor }}>{activeTaxi.status}</span>
                     </div>
                     <div>
-                      COLLISION: <span className={isSelectedCritical ? 'text-red-500 animate-pulse' : 'text-green-500'}>{isSelectedCritical ? 'CONFLICT' : 'SECURE'}</span>
+                      COLLISION: <span className={isSelectedCritical ? 'text-red-500 animate-pulse font-extrabold' : 'text-green-500'}>{isSelectedCritical ? 'CONFLICT' : 'SECURE'}</span>
                     </div>
                   </div>
                 </motion.div>
@@ -1110,11 +1458,15 @@ export default function UrbanAirTaxiDashboard() {
           </AnimatePresence>
 
           {/* FLEET TRACKING & FILTERS SECTION */}
-          <div className="border border-zinc-850 p-4 bg-black/40 space-y-4">
+          <div className="border border-zinc-800 bg-[#06060c]/85 p-4 space-y-4 rounded-none backdrop-blur-md relative overflow-hidden font-share-tech">
+            <div className="absolute top-0 left-0 w-2 h-2 border-t border-l border-zinc-700" />
+            <div className="absolute top-0 right-0 w-2 h-2 border-t border-r border-zinc-700" />
+            <div className="absolute bottom-0 left-0 w-2 h-2 border-b border-l border-zinc-700" />
+            <div className="absolute bottom-0 right-0 w-2 h-2 border-b border-r border-zinc-700" />
             
             {/* Search Input Widget */}
             <div className="space-y-2">
-              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block flex items-center gap-1">
+              <label className="text-[9px] font-orbitron font-black text-zinc-400 uppercase tracking-widest block flex items-center gap-1">
                 <Search className="w-3 h-3 text-[#00ffcc]" /> Search Fleet By ID
               </label>
               <div className="relative">
@@ -1123,7 +1475,7 @@ export default function UrbanAirTaxiDashboard() {
                   placeholder="ENTER TAXI ID (E.G. TX2)..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value.toUpperCase())}
-                  className="w-full bg-[#050508] border border-zinc-800 p-2 text-xs font-mono text-white placeholder-zinc-700 rounded-none focus:outline-none focus:border-[#00ffcc]/50"
+                  className="w-full bg-[#030306] border border-zinc-850 p-2 text-xs font-mono text-white placeholder-zinc-700 rounded-none focus:outline-none focus:border-[#00ffcc]/50"
                 />
                 {searchQuery && (
                   <button 
@@ -1138,11 +1490,11 @@ export default function UrbanAirTaxiDashboard() {
 
             {/* Dropdown Selector (Direct selection target) */}
             <div className="space-y-2">
-              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block">Direct Target Select</label>
+              <label className="text-[9px] font-orbitron font-black text-zinc-400 uppercase tracking-widest block">Direct Target Select</label>
               <select 
                 value={selectedTaxiId || ''} 
                 onChange={(e) => setSelectedTaxiId(e.target.value || null)}
-                className="w-full bg-[#050508] border border-zinc-800 p-2 text-xs font-mono text-white rounded-none focus:outline-none focus:border-[#00ffcc]/50"
+                className="w-full bg-[#030306] border border-zinc-850 p-2 text-xs font-mono text-white rounded-none focus:outline-none focus:border-[#00ffcc]/50"
               >
                 <option value="">-- SELECT TAXI TARGET --</option>
                 {taxis.map(t => (
@@ -1153,8 +1505,8 @@ export default function UrbanAirTaxiDashboard() {
 
             {/* Sector Filtering Widgets */}
             <div className="space-y-2">
-              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block">Sector-Wise Quadrants</label>
-              <div className="grid grid-cols-5 gap-1 bg-black border border-zinc-900 p-0.5">
+              <label className="text-[9px] font-orbitron font-black text-zinc-400 uppercase tracking-widest block">Sector-Wise Quadrants</label>
+              <div className="grid grid-cols-5 gap-1 bg-black/60 border border-zinc-850 p-0.5 font-orbitron">
                 {['ALL', 'NORTH', 'SOUTH', 'EAST', 'WEST'].map(sect => (
                   <button
                     key={sect}
@@ -1173,8 +1525,8 @@ export default function UrbanAirTaxiDashboard() {
 
             {/* Busiest Skyports & Analytical density indices */}
             <div className="border-t border-zinc-900 pt-3 space-y-1.5 text-[8.5px]">
-              <div className="text-[9px] font-black uppercase text-zinc-400 mb-1 flex items-center gap-1.5">
-                <Cpu className="w-3.5 h-3.5 text-[#00ffcc]" /> DENSITY_ANALYTICAL_MATRIX
+              <div className="text-[9px] font-orbitron font-black uppercase text-zinc-400 mb-1 flex items-center gap-1.5">
+                <Cpu className="w-3.5 h-3.5 text-[#00ffcc]" /> ANALYTICAL_MATRIX
               </div>
               <div className="flex justify-between text-zinc-500">
                 <span>ACTIVE_CONGESTED_ZONES</span>
@@ -1186,16 +1538,16 @@ export default function UrbanAirTaxiDashboard() {
               </div>
               <div className="flex justify-between text-zinc-500">
                 <span>SEPARATION_VIOLATIONS</span>
-                <span className="text-green-400 font-mono">0 ACTIVE</span>
+                <span className="text-green-405 font-mono font-bold">0 ACTIVE</span>
               </div>
             </div>
 
             {/* Dynamic Fleet List Scrollable */}
             <div className="border-t border-zinc-900 pt-3">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] font-black uppercase text-[#00ffcc] tracking-widest">Surveillance Feed ({taxis.filter(t => {
-                  const x = (t.longitude - 78.0) * 1100;
-                  const y = (t.latitude - 17.0) * 900;
+                <span className="text-[9px] font-orbitron font-black uppercase text-[#00ffcc] tracking-wider">Surveillance Feed ({taxis.filter(t => {
+                  const x = toX(t.longitude);
+                  const y = toY(t.latitude);
                   if (sectorFilter === 'NORTH') return y < 450;
                   if (sectorFilter === 'SOUTH') return y >= 450;
                   if (sectorFilter === 'EAST') return x >= 550;
@@ -1207,8 +1559,8 @@ export default function UrbanAirTaxiDashboard() {
               <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1 custom-scrollbar">
                 {taxis
                   .filter(t => {
-                    const x = (t.longitude - 78.0) * 1100;
-                    const y = (t.latitude - 17.0) * 900;
+                    const x = toX(t.longitude);
+                    const y = toY(t.latitude);
                     
                     // Apply quadrant filter
                     if (sectorFilter === 'NORTH' && y >= 450) return false;
@@ -1223,26 +1575,24 @@ export default function UrbanAirTaxiDashboard() {
                   })
                   .map((taxi) => {
                     const isSelected = selectedTaxiId === taxi.id;
+                    const isCritical = taxi.status === 'Critical';
+                    const activeColor = isCritical ? 'border-red-500/50 hover:border-red-500 bg-[#ef4444]/5' : isSelected ? 'border-[#00ffcc] bg-[#00ffcc]/5 shadow-[0_0_8px_rgba(0,255,204,0.15)]' : 'border-zinc-900 hover:border-zinc-800 bg-[#030305]';
                     return (
                       <div 
                         key={taxi.id} 
                         onClick={() => setSelectedTaxiId(taxi.id)}
-                        className={`bg-black/90 p-2.5 border transition-all cursor-pointer ${
-                          isSelected 
-                            ? 'border-[#00ffcc] bg-[#00ffcc]/5 shadow-[0_0_8px_rgba(0,255,204,0.1)]' 
-                            : 'border-zinc-900 hover:border-zinc-700'
-                        }`}
+                        className={`p-2.5 border transition-all cursor-pointer rounded-none relative ${activeColor}`}
                       >
                         <div className="flex justify-between items-center mb-1">
-                          <span className="text-[10px] font-black text-white">{taxi.id}</span>
-                          <span className={`px-1.5 py-0.5 text-[7px] font-black border uppercase tracking-widest leading-none ${getStatusColor(taxi.status)}`}>
+                          <span className="text-[10px] font-orbitron font-black text-white">{taxi.id}</span>
+                          <span className={`px-1.5 py-0.5 text-[7px] font-orbitron font-black border uppercase tracking-widest leading-none ${getStatusColor(taxi.status)}`}>
                             {taxi.status}
                           </span>
                         </div>
-                        <div className="flex justify-between text-[8px] text-zinc-500">
+                        <div className="flex justify-between text-[8px] text-zinc-500 font-share-tech">
                           <span>ALT: {Math.round(taxi.altitude)}M</span>
                           <span>SPD: {Math.round(taxi.speed * 100)}KMH</span>
-                          <span className={taxi.battery < 30 ? 'text-red-500 animate-pulse' : 'text-zinc-400'}>{Math.round(taxi.battery)}% BATT</span>
+                          <span className={taxi.battery < 30 ? 'text-red-500 animate-pulse font-bold' : 'text-zinc-400'}>{Math.round(taxi.battery)}% BATT</span>
                         </div>
                       </div>
                     );
@@ -1255,14 +1605,18 @@ export default function UrbanAirTaxiDashboard() {
       </div>
 
       {/* FOOTER - SYSTEM TELEMETRY */}
-      <div className="max-w-[1600px] mx-auto mt-6 grid grid-cols-2 md:grid-cols-4 gap-4 border-t border-zinc-800 pt-4">
+      <div className="max-w-[1600px] mx-auto mt-6 grid grid-cols-2 md:grid-cols-4 gap-4 border-t border-zinc-850 pt-4 relative z-10 font-orbitron">
         {[
           { label: 'AI_MODEL_CONF', value: '99.8%', icon: Zap, color: 'text-green-500' },
-          { label: 'FLEET_AVG_ALT', value: '575M', icon: TrendingUp, color: 'text-zinc-400' },
-          { label: 'SAFETY_RATIO', value: '98.4%', icon: Shield, color: 'text-[#00ffcc]' },
+          { label: 'FLEET_AVG_ALT', value: taxis.length > 0 ? `${Math.round(taxis.reduce((acc, t) => acc + t.altitude, 0) / taxis.length)}M` : '575M', icon: TrendingUp, color: 'text-zinc-400' },
+          { label: 'SAFETY_RATIO', value: '99.4%', icon: Shield, color: 'text-[#00ffcc]' },
           { label: 'RISK_EVENTS', value: taxis.filter(t => t.status === 'Critical').length.toString(), icon: AlertTriangle, color: 'text-red-500 animate-pulse' },
         ].map((stat, i) => (
-          <div key={i} className="bg-black/40 p-3 border border-zinc-900">
+          <div key={i} className="bg-[#06060c]/85 p-3.5 border border-zinc-900 rounded-none relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-1.5 h-1.5 border-t border-l border-zinc-800" />
+            <div className="absolute top-0 right-0 w-1.5 h-1.5 border-t border-r border-zinc-800" />
+            <div className="absolute bottom-0 left-0 w-1.5 h-1.5 border-b border-l border-zinc-800" />
+            <div className="absolute bottom-0 right-0 w-1.5 h-1.5 border-b border-r border-zinc-800" />
             <h3 className="text-zinc-600 text-[8px] font-black uppercase tracking-[0.2em] mb-1">{stat.label}</h3>
             <div className={`text-xl font-bold tracking-widest ${stat.color}`}>{stat.value}</div>
           </div>

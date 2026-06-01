@@ -6,6 +6,10 @@ import os
 import joblib
 import io
 import json
+import urllib.request
+import urllib.error
+import time
+import math
 
 app = FastAPI()
 
@@ -25,6 +29,112 @@ if os.path.exists(MODEL_PATH):
         print("DONE: AI MODEL LOADED")
     except:
         print("ERROR: MODEL LOAD FAILED")
+
+# =========================================================
+# REAL WEATHER & Nominatim APIs (WITH OFFLINE FALLBACKS)
+# =========================================================
+
+WEATHER_CACHE = {}
+LOCATION_CACHE = {}
+
+def fetch_json(url: str, headers: dict = None, timeout: float = 2.0):
+    if headers is None:
+        headers = {}
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status == 200:
+                return json.loads(response.read().decode('utf-8'))
+    except Exception as e:
+        print(f"Network error fetching {url}: {e}")
+    return None
+
+def get_real_weather(lat: float, lon: float):
+    now = time.time()
+    cache_key = (round(lat, 2), round(lon, 2))
+    if cache_key in WEATHER_CACHE:
+        cache_time, data = WEATHER_CACHE[cache_key]
+        if now - cache_time < 300: # 5 minutes cache
+            return data
+
+    try:
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,wind_speed_10m,weather_code,visibility&timezone=auto"
+        headers = {"User-Agent": "UrbanAirTaxiSimulation/1.0"}
+        res = fetch_json(url, headers=headers, timeout=2.5)
+        if res and "current" in res:
+            curr = res["current"]
+            code = curr.get("weather_code", 0)
+            
+            # Weather Code mapping
+            cond = "Clear"
+            if code in [1, 2, 3]: cond = "Partly Cloudy"
+            elif code in [45, 48]: cond = "Foggy"
+            elif code in [51, 53, 55, 61, 63, 65]: cond = "Rainy"
+            elif code in [80, 81, 82]: cond = "Showers"
+            elif code in [95, 96, 99]: cond = "Thunderstorm"
+            
+            wind = curr.get("wind_speed_10m", 10.0)
+            wdata = {
+                "temperature": curr.get("temperature_2m", 25.0),
+                "wind_speed": wind,
+                "weather_condition": cond,
+                "visibility": curr.get("visibility", 10000.0),
+                "is_safe": wind <= 40.0 and cond not in ["Thunderstorm", "Rainy"]
+            }
+            WEATHER_CACHE[cache_key] = (now, wdata)
+            
+            # Save weather info to disk for simulator consumption
+            try:
+                with open("data/weather_info.json", "w") as wf:
+                    json.dump(wdata, wf)
+            except: pass
+            
+            return wdata
+    except Exception as e:
+        print(f"Weather API error: {e}")
+        
+    # Fallback to local offline file
+    try:
+        with open("data/offline_weather.json", "r") as f:
+            wdata = json.load(f)
+            # Ensure it is written to shared weather_info
+            with open("data/weather_info.json", "w") as wf:
+                json.dump(wdata, wf)
+            return wdata
+    except:
+        default_weather = {
+            "temperature": 28.5,
+            "wind_speed": 15.0,
+            "weather_condition": "Partly Cloudy",
+            "visibility": 10000.0,
+            "is_safe": True
+        }
+        try:
+            with open("data/weather_info.json", "w") as wf:
+                json.dump(default_weather, wf)
+        except: pass
+        return default_weather
+
+def get_place_name(lat: float, lon: float):
+    # High-performance instant local reverse-geocoding to prevent rate limiting (HTTP 429)
+    try:
+        with open("data/offline_locations.json", "r") as f:
+            locs = json.load(f)
+        best_loc = None
+        min_d = float('inf')
+        for loc in locs:
+            d = math.sqrt((loc["lat"] - lat)**2 + (loc["lon"] - lon)**2)
+            if d < min_d:
+                min_d = d
+                best_loc = loc
+        if best_loc:
+            # Add short relative neighborhood suffix
+            return best_loc["name"]
+    except Exception as e:
+        print(f"Offline location fallback error: {e}")
+        
+    return f"Bengaluru Sector ({lat:.4f}, {lon:.4f})"
+
 
 # =========================================================
 # AIRSPACE DEFINITIONS (SHARED CONSTANTS)
@@ -89,6 +199,8 @@ def get_taxis():
         latest_data = data.sort_values('timestamp').groupby('taxi_id').tail(1)
         
         taxis = []
+        global_weather = get_real_weather(12.9716, 77.5946)
+        
         for _, row in latest_data.iterrows():
             # Respect backend determined status if available, else fall back
             status = str(row.get("status", "Flying"))
@@ -109,17 +221,39 @@ def get_taxis():
                     risk_score = int(risk_prob * 100)
                 except: pass
 
+            taxi_lat = float(row["latitude"])
+            taxi_lon = float(row["longitude"])
+            
+            # Calculate nearest skyport
+            nearest_port_name = "Unknown"
+            min_dist = float('inf')
+            for p in skyports:
+                plat = 12.8500 + (p["y"] / 900.0) * (13.1500 - 12.8500)
+                plon = 77.4000 + (p["x"] / 1100.0) * (77.8500 - 77.4000)
+                d = math.sqrt((plat - taxi_lat)**2 + (plon - taxi_lon)**2)
+                if d < min_dist:
+                    min_dist = d
+                    nearest_port_name = p["name"]
+            
+            place = get_place_name(taxi_lat, taxi_lon)
+
             taxis.append({
                 "id": str(row["taxi_id"]),
-                "latitude": float(row["latitude"]),
-                "longitude": float(row["longitude"]),
+                "latitude": taxi_lat,
+                "longitude": taxi_lon,
                 "altitude": int(row["altitude"]),
                 "speed": float(row["speed"]),
                 "route": f"{row['pickup']} -> {row['drop']}",
                 "status": status,
                 "risk": risk_score,
                 "battery": float(row.get("battery", 100.0)),
-                "lastSeen": "LIVE"
+                "lastSeen": "LIVE",
+                "place_name": place,
+                "weather_condition": global_weather.get("weather_condition", "Clear"),
+                "wind_speed": global_weather.get("wind_speed", 10.0),
+                "temperature": global_weather.get("temperature", 25.0),
+                "visibility": global_weather.get("visibility", 10000.0),
+                "nearest_skyport": nearest_port_name
             })
         return taxis
     except Exception as e:
@@ -174,12 +308,43 @@ def get_airspace():
         except:
             pass
             
+    # Decorate skyports with latitude/longitude
+    decorated_skyports = []
+    for port in skyports:
+        lat = 12.8500 + (port["y"] / 900.0) * (13.1500 - 12.8500)
+        lon = 77.4000 + (port["x"] / 1100.0) * (77.8500 - 77.4000)
+        decorated_skyports.append({
+            "name": port["name"],
+            "x": port["x"],
+            "y": port["y"],
+            "latitude": round(lat, 5),
+            "longitude": round(lon, 5)
+        })
+
+    # Decorate congested zones with latitude/longitude
+    decorated_congested_zones = []
+    for cz in congested_zones:
+        lat = 12.8500 + (cz["y"] / 900.0) * (13.1500 - 12.8500)
+        lon = 77.4000 + (cz["x"] / 1100.0) * (77.8500 - 77.4000)
+        decorated_congested_zones.append({
+            "x": cz["x"],
+            "y": cz["y"],
+            "radius": cz["radius"],
+            "density": cz["density"],
+            "latitude": round(lat, 5),
+            "longitude": round(lon, 5)
+        })
+
+    # Get overall weather for Bengaluru center
+    blr_weather = get_real_weather(12.9716, 77.5946)
+            
     return {
-        "skyports": skyports,
+        "skyports": decorated_skyports,
         "buildings": buildings,
         "no_fly_zones": no_fly_zones,
         "weather_cells": weather_cells,
-        "congested_zones": congested_zones
+        "congested_zones": decorated_congested_zones,
+        "weather": blr_weather
     }
 
 class Settings(BaseModel):
@@ -231,6 +396,66 @@ def get_camera_telemetry():
             return json.load(f)
     except:
         return {}
+
+# =========================================================
+# DYNAMIC SIMULATION CONTROL RUNTIME ENDPOINTS
+# =========================================================
+
+import subprocess
+import signal
+
+sim_process = None
+
+@app.get("/simulation/status")
+def get_simulation_status():
+    global sim_process
+    if sim_process is not None:
+        poll = sim_process.poll()
+        if poll is None:
+            return {"status": "active", "pid": sim_process.pid}
+        else:
+            sim_process = None
+    return {"status": "inactive"}
+
+@app.post("/simulation/start")
+def start_simulation():
+    global sim_process
+    if sim_process is not None and sim_process.poll() is None:
+        return {"status": "active", "pid": sim_process.pid}
+    
+    try:
+        # Run main.py using .venv python interpreter headlessly
+        python_exe = os.path.join(".venv", "Scripts", "python.exe")
+        if not os.path.exists(python_exe):
+            python_exe = "python"
+            
+        sim_process = subprocess.Popen(
+            [python_exe, "main.py"],
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
+        )
+        return {"status": "success", "pid": sim_process.pid}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/simulation/stop")
+def stop_simulation():
+    global sim_process
+    if sim_process is None or sim_process.poll() is not None:
+        sim_process = None
+        return {"status": "inactive"}
+    
+    try:
+        pid = sim_process.pid
+        if os.name == 'nt':
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+        else:
+            sim_process.terminate()
+            sim_process.wait(timeout=2)
+            
+        sim_process = None
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
