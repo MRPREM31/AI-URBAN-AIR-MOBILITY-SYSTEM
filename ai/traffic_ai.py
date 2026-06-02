@@ -35,13 +35,32 @@ def congestion_control(taxi, taxis):
                 # Strong exponential repulsion (higher authority the closer they get)
                 push_factor = ((120 - dist) / 120) ** 1.5
                 
-                # Unit repulsion vector
-                push_x = dx / dist if dist > 0 else 1.0
-                push_y = dy / dist if dist > 0 else 0.0
+                # Radial push unit vector pointing away from conflicting aircraft
+                rx = dx / dist if dist > 0 else 1.0
+                ry = dy / dist if dist > 0 else 0.0
                 
-                # Accumulate proactive lateral steering separation forces
-                separation_x += push_x * push_factor * 8.5
-                separation_y += push_y * push_factor * 8.5
+                # Calculate desired destination heading direction
+                t_dx = taxi.target_x - taxi.x
+                t_dy = taxi.target_y - taxi.y
+                t_dist = math.sqrt(t_dx**2 + t_dy**2)
+                if t_dist > 0:
+                    hx = t_dx / t_dist
+                    hy = t_dy / t_dist
+                else:
+                    hx, hy = 1.0, 0.0
+                    
+                # Tangential candidates (perpendicular slide vectors)
+                t1_x, t1_y = -ry, rx
+                t2_x, t2_y = ry, -rx
+                
+                # Choose candidate aligning with destination heading to prevent backward push
+                dot1 = t1_x * hx + t1_y * hy
+                dot2 = t2_x * hx + t2_y * hy
+                tx, ty = (t1_x, t1_y) if dot1 >= dot2 else (t2_x, t2_y)
+                
+                # Combine radial push (40%) and tangential slide (90%) for dynamic sliding avoidance
+                separation_x += (rx * 0.4 + tx * 0.9) * push_factor * 8.5
+                separation_y += (ry * 0.4 + ty * 0.9) * push_factor * 8.5
                 
                 # Proactive Cooperative Vertical Split:
                 # Nudge target altitudes in opposite directions to ensure vertical layering separation

@@ -224,6 +224,10 @@ const lonMax = 77.8500;
 const toX = (lon: number) => ((lon - lonMin) / (lonMax - lonMin)) * 1100;
 const toY = (lat: number) => ((lat - latMin) / (latMax - latMin)) * 900;
 
+const API_BASE = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+  ? "http://127.0.0.1:8000"
+  : "https://f0666c3099fe171b-122-171-23-159.serveousercontent.com";
+
 interface LeafletMapProps {
   taxis: any[];
   airspace: any;
@@ -487,7 +491,7 @@ export default function UrbanAirTaxiDashboard() {
   useEffect(() => {
     const checkStatus = async () => {
       try {
-        const res = await fetch("http://127.0.0.1:8000/simulation/status");
+        const res = await fetch(`${API_BASE}/simulation/status`);
         const data = await res.json();
         if (data && data.status) {
           setSimulationRunning(data.status === "active");
@@ -501,7 +505,7 @@ export default function UrbanAirTaxiDashboard() {
 
   const startSimulationEngine = async () => {
     try {
-      const res = await fetch("http://127.0.0.1:8000/simulation/start", { method: "POST" });
+      const res = await fetch(`${API_BASE}/simulation/start`, { method: "POST" });
       const data = await res.json();
       if (data && (data.status === "success" || data.status === "active")) {
         setSimulationRunning(true);
@@ -511,7 +515,7 @@ export default function UrbanAirTaxiDashboard() {
 
   const stopSimulationEngine = async () => {
     try {
-      const res = await fetch("http://127.0.0.1:8000/simulation/stop", { method: "POST" });
+      const res = await fetch(`${API_BASE}/simulation/stop`, { method: "POST" });
       const data = await res.json();
       if (data && (data.status === "success" || data.status === "inactive")) {
         setSimulationRunning(false);
@@ -522,7 +526,7 @@ export default function UrbanAirTaxiDashboard() {
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const res = await fetch("http://127.0.0.1:8000/settings");
+        const res = await fetch(`${API_BASE}/settings`);
         const data = await res.json();
         if (data && typeof data.slow_down === 'boolean') {
           setSlowDown(data.slow_down);
@@ -537,7 +541,7 @@ export default function UrbanAirTaxiDashboard() {
   const toggleSpeedRestriction = async () => {
     const nextState = !slowDown;
     try {
-      const res = await fetch("http://127.0.0.1:8000/settings", {
+      const res = await fetch(`${API_BASE}/settings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ slow_down: nextState })
@@ -553,7 +557,7 @@ export default function UrbanAirTaxiDashboard() {
 
   const fetchData = async () => {
     try {
-      const response = await fetch("http://127.0.0.1:8000/taxis");
+      const response = await fetch(`${API_BASE}/taxis`);
       const data = await response.json();
       if (!data.error) {
         // Build playback history buffer in background
@@ -591,13 +595,13 @@ export default function UrbanAirTaxiDashboard() {
       }
 
       // Fetch dynamic weather & airspace metadata
-      const airspaceRes = await fetch("http://127.0.0.1:8000/airspace");
+      const airspaceRes = await fetch(`${API_BASE}/airspace`);
       const airspaceData = await airspaceRes.json();
       if (!airspaceData.error) {
         setAirspace(airspaceData);
       }
 
-      const eventsRes = await fetch("http://127.0.0.1:8000/events");
+      const eventsRes = await fetch(`${API_BASE}/events`);
       const eventsData = await eventsRes.json();
       if (!eventsData.error) {
         setEvents(eventsData);
@@ -605,7 +609,7 @@ export default function UrbanAirTaxiDashboard() {
 
       // Fetch dynamic unregistered obstacles
       try {
-        const obsRes = await fetch("http://127.0.0.1:8000/obstacles");
+        const obsRes = await fetch(`${API_BASE}/obstacles`);
         const obsData = await obsRes.json();
         if (Array.isArray(obsData)) {
           setObstacles(obsData);
@@ -614,7 +618,7 @@ export default function UrbanAirTaxiDashboard() {
 
       // Fetch camera telemetry
       try {
-        const camRes = await fetch("http://127.0.0.1:8000/camera_telemetry");
+        const camRes = await fetch(`${API_BASE}/camera_telemetry`);
         const camData = await camRes.json();
         if (camData && !camData.error) {
           setCameraTelemetry(camData);

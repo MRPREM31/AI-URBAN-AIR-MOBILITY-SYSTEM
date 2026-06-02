@@ -52,18 +52,37 @@ def avoid_building(taxi, building):
         # Calculate push force factor (stronger force the closer we get)
         push_factor = (radius - dist) / radius
         
-        # Pushing unit vector
-        push_x = dx / dist if dist > 0 else 1.0
-        push_y = dy / dist if dist > 0 else 0.0
+        # Radial push unit vector pointing away from building center
+        rx = dx / dist if dist > 0 else 1.0
+        ry = dy / dist if dist > 0 else 0.0
+        
+        # Calculate desired destination heading direction
+        t_dx = taxi.target_x - taxi.x
+        t_dy = taxi.target_y - taxi.y
+        t_dist = math.sqrt(t_dx**2 + t_dy**2)
+        if t_dist > 0:
+            hx = t_dx / t_dist
+            hy = t_dy / t_dist
+        else:
+            hx, hy = 1.0, 0.0
+            
+        # Tangential candidates (perpendicular slide vectors)
+        t1_x, t1_y = -ry, rx
+        t2_x, t2_y = ry, -rx
+        
+        # Choose the candidate that aligns with the destination heading to prevent reversing
+        dot1 = t1_x * hx + t1_y * hy
+        dot2 = t2_x * hx + t2_y * hy
+        tx, ty = (t1_x, t1_y) if dot1 >= dot2 else (t2_x, t2_y)
         
         # Initialize taxi's active steering accumulators if not present
         if not hasattr(taxi, 'steering_x'):
             taxi.steering_x = 0.0
             taxi.steering_y = 0.0
             
-        # Inject lateral steering forces into autopilot
-        taxi.steering_x += push_x * push_factor * 4.5
-        taxi.steering_y += push_y * push_factor * 4.5
+        # Combine radial push (40%) and tangential slide (90%) for clean deflection
+        taxi.steering_x += (rx * 0.4 + tx * 0.9) * push_factor * 4.5
+        taxi.steering_y += (ry * 0.4 + ty * 0.9) * push_factor * 4.5
         
         # Vertical obstacle clearance climb (750m override)
         taxi.target_altitude = 750

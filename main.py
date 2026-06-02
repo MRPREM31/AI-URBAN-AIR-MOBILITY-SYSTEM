@@ -357,11 +357,7 @@ class AirTaxi:
     # =====================================================
 
     def move(self):
-        # 1. Reset steering accumulators
-        self.steering_x = 0.0
-        self.steering_y = 0.0
-
-        # 2. Desired velocity toward active flight target (destination or micro-route detour)
+        # 1. Desired velocity toward active flight target (destination or micro-route detour)
         active_target_x = self.detour_x if getattr(self, 'detouring', False) else self.target_x
         active_target_y = self.detour_y if getattr(self, 'detouring', False) else self.target_y
 
@@ -376,7 +372,15 @@ class AirTaxi:
             desired_vx = 0.0
             desired_vy = 0.0
 
-        # 3. Apply No-Fly Zone repulsion steering forces
+        # Calculate desired heading unit vector for tangential calculations
+        if desired_vx != 0.0 or desired_vy != 0.0:
+            d_dist = math.sqrt(desired_vx**2 + desired_vy**2)
+            hx = desired_vx / d_dist
+            hy = desired_vy / d_dist
+        else:
+            hx, hy = 1.0, 0.0
+
+        # 2. Apply No-Fly Zone repulsion steering forces (tangential sliding)
         in_any_nfz = False
         for nfz in no_fly_zones:
             n_dx = self.x - nfz["x"]
@@ -385,10 +389,23 @@ class AirTaxi:
             if n_dist < nfz["radius"] + 35:
                 in_any_nfz = True
                 push_factor = (nfz["radius"] + 35 - n_dist) / (nfz["radius"] + 35)
-                push_x = n_dx / n_dist if n_dist > 0 else 1.0
-                push_y = n_dy / n_dist if n_dist > 0 else 0.0
-                self.steering_x += push_x * push_factor * 6.5
-                self.steering_y += push_y * push_factor * 6.5
+                
+                # Radial push unit vector pointing away from obstacle center
+                rx = n_dx / n_dist if n_dist > 0 else 1.0
+                ry = n_dy / n_dist if n_dist > 0 else 0.0
+                
+                # Tangential candidates (perpendicular slide vectors)
+                t1_x, t1_y = -ry, rx
+                t2_x, t2_y = ry, -rx
+                
+                # Select the candidate that aligns with the destination heading to avoid backward flight
+                dot1 = t1_x * hx + t1_y * hy
+                dot2 = t2_x * hx + t2_y * hy
+                tx, ty = (t1_x, t1_y) if dot1 >= dot2 else (t2_x, t2_y)
+                
+                # Combine radial push (40%) and tangential slide (90%) for smooth guidance
+                self.steering_x += (rx * 0.4 + tx * 0.9) * push_factor * 6.5
+                self.steering_y += (ry * 0.4 + ty * 0.9) * push_factor * 6.5
                 self.status = 'Emerging'
                 
                 if not getattr(self, 'has_nofly_logged', False):
@@ -398,7 +415,7 @@ class AirTaxi:
         if not in_any_nfz:
             self.has_nofly_logged = False
 
-        # 4. Apply Weather Storm cell repulsion steering forces
+        # 3. Apply Weather Storm cell repulsion steering forces (tangential sliding)
         in_any_storm = False
         for storm in weather_cells:
             s_dx = self.x - storm["x"]
@@ -407,13 +424,26 @@ class AirTaxi:
             if s_dist < storm["radius"] + 35:
                 in_any_storm = True
                 push_factor = (storm["radius"] + 35 - s_dist) / (storm["radius"] + 35)
-                push_x = s_dx / s_dist if s_dist > 0 else 1.0
-                push_y = s_dy / s_dist if s_dist > 0 else 0.0
-                self.steering_x += push_x * push_factor * 5.5
-                self.steering_y += push_y * push_factor * 5.5
+                
+                # Radial push unit vector
+                rx = s_dx / s_dist if s_dist > 0 else 1.0
+                ry = s_dy / s_dist if s_dist > 0 else 0.0
+                
+                # Tangential candidates
+                t1_x, t1_y = -ry, rx
+                t2_x, t2_y = ry, -rx
+                
+                # Select candidate aligning with destination heading
+                dot1 = t1_x * hx + t1_y * hy
+                dot2 = t2_x * hx + t2_y * hy
+                tx, ty = (t1_x, t1_y) if dot1 >= dot2 else (t2_x, t2_y)
+                
+                # Combine radial push (40%) and tangential slide (90%)
+                self.steering_x += (rx * 0.4 + tx * 0.9) * push_factor * 5.5
+                self.steering_y += (ry * 0.4 + ty * 0.9) * push_factor * 5.5
                 self.status = 'Emerging'
                 
-                # Turbulance velocity penalty
+                # Turbulence velocity penalty
                 self.speed = max(0.6, self.speed - 0.15)
                 
                 if not getattr(self, 'has_storm_logged', False):
@@ -423,7 +453,7 @@ class AirTaxi:
         if not in_any_storm:
             self.has_storm_logged = False
 
-        # 5. Sum desired velocity and dynamic steering vectors
+        # 4. Sum desired velocity and dynamic steering vectors
         actual_vx = desired_vx + self.steering_x
         actual_vy = desired_vy + self.steering_y
 
@@ -928,6 +958,8 @@ while running:
     congested_zones = detect_congestion_zones(taxis)
 
     for taxi in taxis:
+        taxi.steering_x = 0.0
+        taxi.steering_y = 0.0
         taxi.detect_buildings()
 
         # 1. Autopilot Building Repulsions
@@ -991,12 +1023,31 @@ while running:
             obs_id = taxi.camera_detection["obstacle_id"]
             obs_dx = obs_x - taxi.x
             obs_dy = obs_y - taxi.y
-            perp_x = -obs_dy
-            perp_y = obs_dx
-            dist = math.sqrt(perp_x**2 + perp_y**2)
+            dist = math.sqrt(obs_dx**2 + obs_dy**2)
             if dist > 0:
-                taxi.detour_x = obs_x + (perp_x / dist) * 75
-                taxi.detour_y = obs_y + (perp_y / dist) * 75
+                # Two candidate perpendicular directions to evade the obstacle
+                perp_x1 = -obs_dy
+                perp_y1 = obs_dx
+                perp_x2 = obs_dy
+                perp_y2 = -obs_dx
+                
+                # Form two waypoint candidates
+                wp1_x = obs_x + (perp_x1 / dist) * 75
+                wp1_y = obs_y + (perp_y1 / dist) * 75
+                wp2_x = obs_x + (perp_x2 / dist) * 75
+                wp2_y = obs_y + (perp_y2 / dist) * 75
+                
+                # Pick the waypoint that is closer to the final destination to minimize path detour
+                d1 = math.sqrt((wp1_x - taxi.target_x)**2 + (wp1_y - taxi.target_y)**2)
+                d2 = math.sqrt((wp2_x - taxi.target_x)**2 + (wp2_y - taxi.target_y)**2)
+                
+                if d1 < d2:
+                    taxi.detour_x = wp1_x
+                    taxi.detour_y = wp1_y
+                else:
+                    taxi.detour_x = wp2_x
+                    taxi.detour_y = wp2_y
+                    
                 taxi.detouring = True
                 taxi.status = 'Detouring'
                 taxi.speed = max(0.8, taxi.speed * 0.85)
@@ -1006,10 +1057,16 @@ while running:
                     taxi.last_logged_obs = obs_id
         else:
             if getattr(taxi, 'detouring', False):
+                # Evasive detour early release: clear detour if waypoint is reached or now further from target than we are
                 tdx = taxi.detour_x - taxi.x
                 tdy = taxi.detour_y - taxi.y
                 tdist = math.sqrt(tdx**2 + tdy**2)
-                if tdist < 15:
+                
+                t_dx = taxi.target_x - taxi.x
+                t_dy = taxi.target_y - taxi.y
+                t_dist = math.sqrt(t_dx**2 + t_dy**2)
+                
+                if tdist < 15 or tdist > t_dist:
                     taxi.detouring = False
                     taxi.status = 'Flying'
                     taxi.has_camera_logged = False
